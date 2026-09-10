@@ -50,6 +50,14 @@ export interface ApiPoolRouting {
   simple: string[];
   complex: string[];
 }
+export interface ApiPoolReadiness {
+  enabled: boolean;
+  ready: boolean;
+  lanes: {
+    simple: boolean;
+    complex: boolean;
+  };
+}
 export interface ApiPoolPreset {
   id: ApiPreset;
   name: string;

@@ -1,9 +1,12 @@
 'use client';
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import type { Identity } from '@nau/domain';
+import type { ApiPoolReadiness, Identity } from '@nau/domain';
 import { api, post } from '../lib/api';
 type Health = {
+  status: 'ok';
   llmProvider: string;
+  llmReady: boolean;
+  poolReadiness: ApiPoolReadiness;
   demoLogin: boolean;
   demoPasswordPreset: boolean;
   retentionDays: number;

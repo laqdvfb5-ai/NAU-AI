@@ -54,6 +54,13 @@ test('keeps HTTP status mapping authoritative', () => {
   expectCode({ status: 400, type: 'upstream_error' }, 'INCOMPATIBLE_REQUEST');
 });
 
+test('recognizes statusCode and numeric-string HTTP statuses from SDK error shapes', () => {
+  expectCode({ statusCode: 503 }, 'UPSTREAM_ERROR');
+  expectCode({ response: { statusCode: '401' } }, 'AUTH_FAILED');
+  expectCode({ status: '429' }, 'RATE_LIMIT');
+  expectCode({ cause: { response: { status: ' 422 ' } } }, 'INCOMPATIBLE_REQUEST');
+});
+
 test('maps known request identifiers and leaves unknown errors as connection failures', () => {
   expectCode({ error: { code: 'model_not_found' } }, 'NOT_FOUND');
   expectCode({ type: 'invalid_request_error' }, 'INCOMPATIBLE_REQUEST');

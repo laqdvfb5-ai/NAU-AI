@@ -330,9 +330,10 @@ function collectErrorDetails(error: unknown): ErrorDetails {
         poolError: record,
       };
 
-    const status = record.status;
-    if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599)
-      details.statuses.push(status);
+    for (const field of ['status', 'statusCode'] as const) {
+      const status = parseHttpStatus(record[field]);
+      if (status !== undefined) details.statuses.push(status);
+    }
 
     for (const field of ['type', 'code', 'name'] as const) {
       const value = record[field];
@@ -348,6 +349,16 @@ function collectErrorDetails(error: unknown): ErrorDetails {
   }
 
   return details;
+}
+
+function parseHttpStatus(value: unknown) {
+  const status =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d{3}$/.test(value.trim())
+        ? Number(value.trim())
+        : Number.NaN;
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
 }
 
 function normalize(value: string) {

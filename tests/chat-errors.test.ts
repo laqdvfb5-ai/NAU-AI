@@ -11,7 +11,7 @@ import {
 
 test('chat model failures preserve only normalized pool details', () => {
   const exception = new ChatModelException(
-    new PoolError('UPSTREAM_ERROR', 'Máy chủ API đang báo lỗi. Có thể thử lại sau.'),
+    new PoolError('UPSTREAM_ERROR', 'provider.internal returned api_key=sk-secret'),
   );
 
   assert.equal(exception.getStatus(), 502);
@@ -20,6 +20,59 @@ test('chat model failures preserve only normalized pool details', () => {
     message: 'Máy chủ API đang báo lỗi. Có thể thử lại sau.',
     retryable: true,
   });
+  assert.doesNotMatch(JSON.stringify(exception), /provider\.internal|sk-secret/);
+});
+
+test('configuration errors cannot expose profile names or arbitrary PoolError messages', () => {
+  const exception = new ChatModelException(
+    new PoolError(
+      'TEST_REQUIRED',
+      'Cấu hình "tenant-secret-profile" cần kiểm tra lại với key=sk-private.',
+    ),
+  );
+
+  assert.deepEqual(publicChatError(exception), {
+    code: 'TEST_REQUIRED',
+    message: 'Model AI chưa sẵn sàng. Quản trị viên cần kiểm tra cấu hình API.',
+    retryable: false,
+  });
+  assert.doesNotMatch(JSON.stringify(exception), /tenant-secret-profile|sk-private/);
+});
+
+test('only explicitly transient model failures are retryable', () => {
+  const retryable = [
+    'UPSTREAM_ERROR',
+    'RATE_LIMIT',
+    'TIMEOUT',
+    'CONNECTION_FAILED',
+    'BUSY',
+    'COOLDOWN',
+    'NO_API_AVAILABLE',
+    'EMPTY_RESPONSE',
+  ];
+  const permanent = [
+    'AUTH_FAILED',
+    'BUDGET_LIMIT',
+    'LOCAL_ONLY',
+    'DISABLED',
+    'KEY_REQUIRED',
+    'PRICES_REQUIRED',
+    'TEST_REQUIRED',
+    'FUTURE_UNKNOWN_ERROR',
+  ];
+
+  for (const code of retryable)
+    assert.equal(
+      new ChatModelException(new PoolError(code, 'private detail')).retryable,
+      true,
+      code,
+    );
+  for (const code of permanent)
+    assert.equal(
+      new ChatModelException(new PoolError(code, 'private detail')).retryable,
+      false,
+      code,
+    );
 });
 
 test('ChatService surfaces the pool code and emits only the structured safe log', async () => {

@@ -730,23 +730,26 @@ export default function ApiPoolPage() {
                         </select>
                       ) : (
                         <div className="pool-route-options">
-                          {data.profiles.map((p) => (
-                            <label key={p.id}>
-                              <input
-                                type="checkbox"
-                                disabled={Boolean(busy) || !isReady(p)}
-                                checked={routing[lane].includes(p.id)}
-                                onChange={() => toggleRoute(lane, p.id)}
-                              />
-                              <span>
-                                {p.name}
-                                <small>
-                                  {p.model || 'Chưa chọn model'}
-                                  {!isReady(p) ? ' · chưa sẵn sàng' : ''}
-                                </small>
-                              </span>
-                            </label>
-                          ))}
+                          {data.profiles.map((p) => {
+                            const selected = routing[lane].includes(p.id);
+                            return (
+                              <label key={p.id}>
+                                <input
+                                  type="checkbox"
+                                  disabled={Boolean(busy) || (!isReady(p) && !selected)}
+                                  checked={selected}
+                                  onChange={() => toggleRoute(lane, p.id)}
+                                />
+                                <span>
+                                  {p.name}
+                                  <small>
+                                    {p.model || 'Chưa chọn model'}
+                                    {!isReady(p) ? ' · chưa sẵn sàng' : ''}
+                                  </small>
+                                </span>
+                              </label>
+                            );
+                          })}
                           {!data.profiles.length && (
                             <p className="microcopy">Thêm cấu hình để chọn tuyến.</p>
                           )}

@@ -98,11 +98,13 @@ class ApiController {
   constructor(@Inject('DB') private database: Database) {}
   @Get('health') async health() {
     await this.database.query('SELECT 1');
-    await apiPool.refresh();
+    const poolReadiness = await apiPool.readiness();
     return {
       status: 'ok',
       dataMode: env.synthetic ? 'synthetic' : 'real',
       llmProvider: apiPool.currentRouting.enabled ? 'pool' : env.llm,
+      llmReady: poolReadiness.enabled ? poolReadiness.ready : env.llm !== 'evidence',
+      poolReadiness,
       embeddingProvider: env.embedding,
       demoLogin: env.demo,
       demoPasswordPreset: env.demo && process.env.DEMO_PASSWORD === 'NauDemo2026!',

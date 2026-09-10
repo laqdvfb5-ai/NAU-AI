@@ -72,6 +72,66 @@ test('every supported chat route returns exactly model output, including uncerta
   }
 });
 
+test('provider routing metadata is returned only to administrators', async () => {
+  const service = new ChatService(db, kb, {
+    mode: 'pool',
+    async generate() {
+      return {
+        text: 'Câu trả lời do model tạo.',
+        model: 'fixture-model',
+        providerId: 'private-provider-id',
+        providerName: 'Private provider name',
+        mode: 'pool',
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
+    },
+  });
+  const admin: Session = {
+    hash: 'dialogue-admin-metadata',
+    identity: { accountId: 'admin', role: 'admin', displayName: 'Admin' },
+  };
+
+  for (const session of [guest, sv]) {
+    const result = await service.answer('Xin chào', session, undefined, true);
+    assert.equal(result.providerId, undefined);
+    assert.equal(result.providerName, undefined);
+    assert.equal(result.model, 'fixture-model');
+  }
+
+  const result = await service.answer('Xin chào', admin, undefined, true);
+  assert.equal(result.providerId, 'private-provider-id');
+  assert.equal(result.providerName, 'Private provider name');
+
+  for (const [session, canInspectProvider] of [
+    [sv, false],
+    [admin, true],
+  ] as const) {
+    const conversationId = randomUUID();
+    await db.query('INSERT INTO conversations(id,owner_hash,title) VALUES($1,$2,$3)', [
+      conversationId,
+      ownerKey(session),
+      'Legacy provider metadata',
+    ]);
+    await db.query('INSERT INTO messages(id,conversation_id,role,data) VALUES($1,$2,$3,$4)', [
+      randomUUID(),
+      conversationId,
+      'assistant',
+      JSON.stringify({
+        id: randomUUID(),
+        role: 'assistant',
+        text: 'Legacy answer',
+        providerId: 'legacy-private-id',
+        providerName: 'Legacy private provider',
+      }),
+    ]);
+    const [stored] = await service.history(conversationId, session);
+    assert.equal('providerId' in stored, canInspectProvider);
+    assert.equal('providerName' in stored, canInspectProvider);
+  }
+});
+
 test('progress reports only executed work and no simulated search for a greeting', async () => {
   for (const [question, session, expected] of [
     ['hello', guest, ['reasoning', 'generating']],

@@ -59,6 +59,19 @@ export const ownerKey = (session: Session) =>
         .update('account:' + session.identity.accountId)
         .digest('hex')
     : session.hash;
+function historyMessageFor(session: Session, data: unknown) {
+  if (
+    session.identity?.role === 'admin' ||
+    !data ||
+    typeof data !== 'object' ||
+    Array.isArray(data)
+  )
+    return data;
+  const visible = { ...(data as Record<string, unknown>) };
+  delete visible.providerId;
+  delete visible.providerName;
+  return visible;
+}
 const money = (n: number) => new Intl.NumberFormat('vi-VN').format(n) + ' đồng';
 export class ChatService {
   evaluator = new NauAcademicEvaluator();
@@ -102,7 +115,7 @@ export class ChatService {
         'SELECT data FROM messages WHERE conversation_id=$1 ORDER BY created_at,id',
         [id],
       )
-    ).map((r) => r.data);
+    ).map((r) => historyMessageFor(session, r.data));
   }
   async answer(
     question: string,
@@ -445,8 +458,10 @@ export class ChatService {
     }
     result.text = response.text;
     result.model = response.model;
-    result.providerId = response.providerId;
-    result.providerName = response.providerName;
+    if (session.identity?.role === 'admin') {
+      result.providerId = response.providerId;
+      result.providerName = response.providerName;
+    }
     result.mode = response.mode || this.llm.mode;
     if (bufferAnswer) onText?.(response.text);
     if (!ephemeral && !signal?.aborted) {

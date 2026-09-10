@@ -193,9 +193,11 @@ export function Shell({
         <footer className="app-footer">
           <span>NAU AI · Đồng hành trên hành trình đại học</span>
           <span>
-            {health?.llmProvider === 'evidence'
-              ? 'Chưa cấu hình model cho chat'
-              : 'Câu trả lời do model AI tạo'}{' '}
+            {health?.llmReady === false
+              ? 'Model AI hiện chưa sẵn sàng'
+              : health?.llmProvider === 'evidence'
+                ? 'Chưa cấu hình model cho chat'
+                : 'Câu trả lời do model AI tạo'}{' '}
             <span className="footer-dot">·</span> Lưu hội thoại {health?.retentionDays || 30} ngày
           </span>
         </footer>

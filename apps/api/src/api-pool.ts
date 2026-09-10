@@ -7,6 +7,7 @@ import type {
   ApiProfile,
   ApiTestResult,
   ApiPoolRouting,
+  ApiPoolReadiness,
   LLMProvider,
   LLMRequest,
   LLMResponse,
@@ -89,6 +90,23 @@ const DEFAULT_ROUTING: ApiPoolRouting = {
   complex: [],
 };
 
+const READINESS_INVALIDATING_ERRORS = new Set([
+  'AUTH_FAILED',
+  'DISABLED',
+  'INCOMPATIBLE_REQUEST',
+  'KEY_REQUIRED',
+  'KEY_STORAGE',
+  'LOCAL_ONLY',
+  'MODEL_REQUIRED',
+  'NETWORK_BLOCKED',
+  'NOT_FOUND',
+  'PRICES_REQUIRED',
+]);
+
+function invalidatesReadiness(code: string) {
+  return READINESS_INVALIDATING_ERRORS.has(code);
+}
+
 export class ApiPoolService {
   private readonly logger = new Logger(ApiPoolService.name);
   private runtime = new Map<string, Runtime>();
@@ -152,6 +170,38 @@ export class ApiPoolService {
       metrics: await this.metrics(),
       budgetUsd: env.budget,
       maxRequestCostUsd: env.maxCost,
+    };
+  }
+  async readiness(): Promise<ApiPoolReadiness> {
+    await this.refresh();
+    if (!this.routing.enabled)
+      return {
+        enabled: false,
+        ready: false,
+        lanes: { simple: false, complex: false },
+      };
+
+    const rows = await this.db.query<ProfileRow>('SELECT * FROM api_profiles');
+    const readyIds = new Set(
+      rows
+        .filter((row) => {
+          try {
+            this.checkUsable(row, true);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .map((row) => row.id),
+    );
+    const lanes = {
+      simple: this.routing.simple.some((id) => readyIds.has(id)),
+      complex: this.routing.complex.some((id) => readyIds.has(id)),
+    };
+    return {
+      enabled: true,
+      ready: lanes.simple && lanes.complex,
+      lanes,
     };
   }
   async metrics(): Promise<ApiProfileMetrics[]> {
@@ -466,9 +516,30 @@ export class ApiPoolService {
       };
     } catch (error) {
       const safe = publicPoolError(error);
-      if (!['BUDGET_LIMIT', 'TIMEOUT', 'KEY_STORAGE'].includes(safe.code)) {
+      const callerAborted = Boolean(request.signal?.aborted);
+      if (
+        !['BUDGET_LIMIT', 'KEY_STORAGE'].includes(safe.code) &&
+        !(safe.code === 'TIMEOUT' && callerAborted)
+      ) {
         state.failures++;
         if (state.failures >= 3) state.cooldownUntil = Date.now() + 30000;
+      }
+      if (purpose === 'chat' && invalidatesReadiness(safe.code)) {
+        try {
+          await this.db.query(
+            'UPDATE api_profiles SET last_success_revision=NULL WHERE id=$1 AND revision=$2',
+            [row.id, row.revision],
+          );
+        } catch {
+          this.logger.error(
+            JSON.stringify({
+              event: 'api_pool_readiness_invalidation_failed',
+              providerId: row.id,
+              revision: row.revision,
+              code: safe.code,
+            }),
+          );
+        }
       }
       if (purpose === 'chat')
         this.logger.warn(
@@ -549,9 +620,10 @@ export class ApiPoolService {
       };
     }
     const { reply, ...stored } = result;
+    const invalidate = !result.ok && invalidatesReadiness(result.errorCode || '');
     await this.db.query(
-      'UPDATE api_profiles SET last_test=$2,last_success_revision=CASE WHEN $4 THEN revision ELSE last_success_revision END WHERE id=$1 AND revision=$3',
-      [id, JSON.stringify(stored), row.revision, result.ok],
+      'UPDATE api_profiles SET last_test=$2,last_success_revision=CASE WHEN $4 THEN revision WHEN $5 THEN NULL ELSE last_success_revision END WHERE id=$1 AND revision=$3',
+      [id, JSON.stringify(stored), row.revision, result.ok, invalidate],
     );
     await this.db.audit(actor, 'api_profile_tested', {
       profileId: id,

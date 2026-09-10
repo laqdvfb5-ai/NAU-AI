@@ -39,6 +39,15 @@ type Message = {
   needsLogin?: boolean;
   conversationId?: string;
 };
+
+type ChatRequestError = Error & { retryable?: boolean };
+
+function chatRequestError(message: string, retryable: unknown): ChatRequestError {
+  const error = new Error(message) as ChatRequestError;
+  if (typeof retryable === 'boolean') error.retryable = retryable;
+  return error;
+}
+
 const suggestions = [
   {
     icon: GraduationCap,
@@ -189,7 +198,7 @@ export function Chat({ embed = false }: { embed?: boolean }) {
       if (!isCurrent()) return;
       if (!response.ok) {
         const e = await response.json().catch(() => ({}));
-        throw new Error(e.message || 'Không kết nối được dịch vụ.');
+        throw chatRequestError(e.message || 'Không kết nối được dịch vụ.', e.retryable);
       }
       if (!response.body) throw new Error('Trình duyệt không hỗ trợ phản hồi trực tiếp.');
       const reader = response.body.getReader(),
@@ -223,7 +232,10 @@ export function Chat({ embed = false }: { embed?: boolean }) {
           }
           if (event === 'delta' && typeof data.text === 'string') setPartial((p) => p + data.text);
           if (event === 'error')
-            throw new Error(data.message || 'AI chưa hoàn tất phản hồi. Vui lòng thử lại.');
+            throw chatRequestError(
+              data.message || 'AI chưa hoàn tất phản hồi. Vui lòng thử lại.',
+              data.retryable,
+            );
           if (event === 'answer') {
             setMessages((m) => [...m, data]);
             if (data.conversationId) setConversation(data.conversationId);
@@ -236,9 +248,10 @@ export function Chat({ embed = false }: { embed?: boolean }) {
       throw new Error('Phản hồi bị gián đoạn. Vui lòng thử lại.');
     } catch (e) {
       if (!isCurrent()) return;
-      if ((e as Error).name !== 'AbortError') setError((e as Error).message);
+      const requestError = e as ChatRequestError;
+      if (requestError.name !== 'AbortError') setError(requestError.message);
       else setError('Đã dừng yêu cầu. Bạn có thể gửi lại câu hỏi.');
-      setRetryQuestion(question);
+      setRetryQuestion(requestError.retryable === false ? '' : question);
     } finally {
       if (isCurrent()) {
         setBusy(false);

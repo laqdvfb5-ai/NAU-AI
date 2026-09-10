@@ -23,7 +23,7 @@ const originalSecret = process.env.SESSION_SECRET;
 const originalLimits = { budget: env.budget, maxCost: env.maxCost };
 const seen: { url: string; auth?: string; body: any }[] = [];
 let baseUrl = '';
-let behavior: 'ok' | 'auth' | 'empty' | 'no-usage' | 'hang' = 'ok';
+let behavior: 'ok' | 'auth' | 'upstream' | 'empty' | 'no-usage' | 'hang' = 'ok';
 const server = createServer(async (req, res) => {
   let raw = '';
   for await (const chunk of req) raw += chunk;
@@ -54,6 +54,11 @@ const server = createServer(async (req, res) => {
         },
       }),
     );
+    return;
+  }
+  if (behavior === 'upstream') {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'temporary fixture outage' } }));
     return;
   }
   res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -291,10 +296,10 @@ test('a transient failed test preserves readiness until the profile configuratio
   await pool.setRouting(routing, 'admin-test');
 
   try {
-    behavior = 'auth';
+    behavior = 'upstream';
     const failed = await pool.test(p.id, request.question, 'admin-test');
     assert.equal(failed.ok, false);
-    assert.equal(failed.errorCode, 'AUTH_FAILED');
+    assert.equal(failed.errorCode, 'UPSTREAM_ERROR');
   } finally {
     behavior = 'ok';
   }
@@ -315,6 +320,87 @@ test('a transient failed test preserves readiness until the profile configuratio
   assert.equal(changed.ready, false);
   await assert.rejects(llm.generate(request), isCode('TEST_REQUIRED'));
   await pool.setRouting({ ...routing, enabled: false, simple: [], complex: [] }, 'admin-test');
+});
+
+test('definitive authentication failures from chat or test require a successful retest', async () => {
+  const p = await pool.save(config(), 'admin-test');
+  const routing = { enabled: true, strategy: 'manual' as const, simple: [p.id], complex: [p.id] };
+  assert.equal((await pool.test(p.id, request.question, 'admin-test')).ok, true);
+  await pool.setRouting(routing, 'admin-test');
+
+  try {
+    behavior = 'auth';
+    await assert.rejects(pool.generate(request), isCode('AUTH_FAILED'));
+  } finally {
+    behavior = 'ok';
+  }
+  assert.equal((await pool.list()).find((v) => v.id === p.id)?.ready, false);
+  await assert.rejects(pool.generate(request), isCode('TEST_REQUIRED'));
+  assert.equal((await pool.test(p.id, request.question, 'admin-test')).ok, true);
+
+  try {
+    behavior = 'auth';
+    const failed = await pool.test(p.id, request.question, 'admin-test');
+    assert.equal(failed.errorCode, 'AUTH_FAILED');
+  } finally {
+    behavior = 'ok';
+  }
+
+  const invalidated = (await pool.list()).find((v) => v.id === p.id)!;
+  assert.equal(invalidated.ready, false);
+  await assert.rejects(pool.generate(request), isCode('TEST_REQUIRED'));
+  assert.equal((await pool.test(p.id, request.question, 'admin-test')).ok, true);
+  assert.equal((await pool.list()).find((v) => v.id === p.id)?.ready, true);
+  await pool.setRouting({ ...routing, enabled: false, simple: [], complex: [] }, 'admin-test');
+  await pool.remove(p.id, 'admin-test');
+});
+
+test('pool readiness requires a usable profile in both lanes without exposing profile details', async () => {
+  await pool.setRouting(
+    { enabled: false, strategy: 'manual', simple: [], complex: [] },
+    'admin-test',
+  );
+  assert.deepEqual(await pool.readiness(), {
+    enabled: false,
+    ready: false,
+    lanes: { simple: false, complex: false },
+  });
+
+  const simple = await pool.save(config({ name: 'Readiness simple' }), 'admin-test');
+  const complex = await pool.save(config({ name: 'Readiness complex' }), 'admin-test');
+  await pool.test(simple.id, request.question, 'admin-test');
+  await pool.test(complex.id, request.question, 'admin-test');
+  const routing = {
+    enabled: true,
+    strategy: 'manual' as const,
+    simple: [simple.id],
+    complex: [complex.id],
+  };
+  await pool.setRouting(routing, 'admin-test');
+
+  const ready = await pool.readiness();
+  assert.deepEqual(ready, {
+    enabled: true,
+    ready: true,
+    lanes: { simple: true, complex: true },
+  });
+  assert.ok(!JSON.stringify(ready).includes(simple.id));
+  assert.ok(!JSON.stringify(ready).includes(complex.id));
+
+  const changed = await pool.save({ ...editable(simple), enabled: false }, 'admin-test', simple.id);
+  assert.equal(changed.ready, false);
+  assert.deepEqual(await pool.readiness(), {
+    enabled: true,
+    ready: false,
+    lanes: { simple: false, complex: true },
+  });
+
+  await pool.setRouting(
+    { enabled: false, strategy: 'manual', simple: [], complex: [] },
+    'admin-test',
+  );
+  await pool.remove(simple.id, 'admin-test');
+  await pool.remove(complex.id, 'admin-test');
 });
 
 test('manual lanes and round robin select actual servers; failed call is never resent', async () => {
@@ -457,6 +543,12 @@ test('whole-stream timeout and concurrency cap release slots even after upstream
     assert.equal(result.errorCode, 'TIMEOUT');
     assert.ok(result.latencyMs < 4000);
     assert.equal((await pool.list()).find((v) => v.id === p.id)?.inFlight, 0);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const timeout = await pool.test(p.id, request.question, 'admin-test');
+      assert.equal(timeout.errorCode, 'TIMEOUT');
+    }
+    assert.ok((await pool.list()).find((v) => v.id === p.id)?.cooldownUntil);
   } finally {
     behavior = 'ok';
   }
