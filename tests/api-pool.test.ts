@@ -112,6 +112,7 @@ function editable(profile: ApiProfile) {
     id,
     revision,
     hasKey,
+    ready,
     lastTest,
     createdAt,
     updatedAt,
@@ -255,6 +256,7 @@ test('draft can discover models without model ID; test streams actual HTTP and r
   assert.equal(usage.status, 'completed');
   assert.equal(Number(usage.input_tokens), 100);
   const stored = (await pool.list()).find((v) => v.id === p.id)!;
+  assert.equal(stored.ready, true);
   assert.equal(stored.lastTest?.ok, true);
   assert.equal(stored.lastTest?.reply, undefined);
 });
@@ -278,6 +280,41 @@ test('routing requires successful test at current revision and survives service 
   assert.equal(llm.mode, 'evidence');
   await assert.rejects(llm.generate(request));
   await pool.remove(p.id, 'admin-test');
+});
+
+test('a transient failed test preserves readiness until the profile configuration changes', async () => {
+  const p = await pool.save(config(), 'admin-test');
+  const routing = { enabled: true, strategy: 'manual', simple: [p.id], complex: [p.id] };
+  assert.equal(p.ready, false);
+  assert.equal((await pool.test(p.id, request.question, 'admin-test')).ok, true);
+  assert.equal((await pool.list()).find((v) => v.id === p.id)?.ready, true);
+  await pool.setRouting(routing, 'admin-test');
+
+  try {
+    behavior = 'auth';
+    const failed = await pool.test(p.id, request.question, 'admin-test');
+    assert.equal(failed.ok, false);
+    assert.equal(failed.errorCode, 'AUTH_FAILED');
+  } finally {
+    behavior = 'ok';
+  }
+
+  const afterFailure = (await pool.list()).find((v) => v.id === p.id)!;
+  assert.equal(afterFailure.lastTest?.ok, false);
+  assert.equal(afterFailure.ready, true);
+  const restarted = new ApiPoolService(db, new Budget(db));
+  const llm = new PooledLLM(restarted, new EvidenceProvider());
+  await llm.refresh();
+  assert.equal((await llm.generate(request)).providerId, p.id);
+
+  const changed = await pool.save(
+    { ...editable(afterFailure), model: 'fixture-changed' },
+    'admin-test',
+    p.id,
+  );
+  assert.equal(changed.ready, false);
+  await assert.rejects(llm.generate(request), isCode('TEST_REQUIRED'));
+  await pool.setRouting({ ...routing, enabled: false, simple: [], complex: [] }, 'admin-test');
 });
 
 test('manual lanes and round robin select actual servers; failed call is never resent', async () => {

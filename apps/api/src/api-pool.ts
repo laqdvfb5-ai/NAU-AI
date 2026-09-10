@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 import type {
   ApiProfileConfig,
   ApiProfile,
@@ -76,6 +77,7 @@ type ProfileRow = {
   encrypted_key: string | null;
   revision: number;
   last_test: ApiTestResult | null;
+  last_success_revision: number | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -88,6 +90,7 @@ const DEFAULT_ROUTING: ApiPoolRouting = {
 };
 
 export class ApiPoolService {
+  private readonly logger = new Logger(ApiPoolService.name);
   private runtime = new Map<string, Runtime>();
   private routing: ApiPoolRouting = { ...DEFAULT_ROUTING };
   constructor(
@@ -124,6 +127,7 @@ export class ApiPoolService {
       id: row.id,
       hasKey: Boolean(row.encrypted_key),
       revision: row.revision,
+      ready: row.last_success_revision === row.revision,
       lastTest: row.last_test,
       createdAt: new Date(row.created_at).toISOString(),
       updatedAt: new Date(row.updated_at).toISOString(),
@@ -251,12 +255,7 @@ export class ApiPoolService {
         'PRICES_REQUIRED',
         'Xác nhận giá token của model trước khi gửi yêu cầu có thể tính phí.',
       );
-    if (
-      requireTest &&
-      (!row.last_test?.ok ||
-        row.last_test.kind !== 'completion' ||
-        row.last_test.revision !== row.revision)
-    )
+    if (requireTest && row.last_success_revision !== row.revision)
       throw new PoolError(
         'TEST_REQUIRED',
         `Cấu hình “${row.config.name}” cần gửi thử thành công sau lần sửa gần nhất.`,
@@ -471,6 +470,19 @@ export class ApiPoolService {
         state.failures++;
         if (state.failures >= 3) state.cooldownUntil = Date.now() + 30000;
       }
+      if (purpose === 'chat')
+        this.logger.warn(
+          JSON.stringify({
+            event: 'api_pool_request_failed',
+            providerId: row.id,
+            revision: row.revision,
+            purpose,
+            code: safe.code,
+            failures: state.failures,
+            latencyMs: Math.round(performance.now() - started),
+            ...(reservation ? { usageId: reservation.id } : {}),
+          }),
+        );
       if (reservation && !settled) {
         await this.budget.finish(reservation, 0, 0, reservation.amount, 'pool_error_' + safe.code);
         await this.db.query('UPDATE usage SET latency_ms=$2 WHERE id=$1', [
@@ -537,11 +549,10 @@ export class ApiPoolService {
       };
     }
     const { reply, ...stored } = result;
-    await this.db.query('UPDATE api_profiles SET last_test=$2 WHERE id=$1 AND revision=$3', [
-      id,
-      JSON.stringify(stored),
-      row.revision,
-    ]);
+    await this.db.query(
+      'UPDATE api_profiles SET last_test=$2,last_success_revision=CASE WHEN $4 THEN revision ELSE last_success_revision END WHERE id=$1 AND revision=$3',
+      [id, JSON.stringify(stored), row.revision, result.ok],
+    );
     await this.db.audit(actor, 'api_profile_tested', {
       profileId: id,
       ok: result.ok,

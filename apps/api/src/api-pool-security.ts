@@ -141,33 +141,225 @@ export function createApiTransport(baseUrl: string, network: 'cloud' | 'local') 
 }
 export function publicPoolError(error: unknown): { code: string; message: string } {
   if (error instanceof PoolError) return { code: error.code, message: error.message };
-  const e = (error || {}) as { status?: number; name?: string; cause?: unknown };
-  if (e.cause instanceof PoolError) return publicPoolError(e.cause);
-  if (e.status === 401 || e.status === 403)
+
+  /*
+   * Some OpenAI-compatible APIs report an error inside an otherwise successful
+   * HTTP 200 event stream. In that case the SDK has no HTTP status to expose and
+   * only keeps fields such as `type`, `code` and `message` on the thrown error.
+   * Inspect a small, known part of the error chain so those failures do not get
+   * mislabeled as DNS/connection failures. Provider text is used only for
+   * classification and is never returned to the client.
+   */
+  const details = collectErrorDetails(error);
+  if (details.poolError)
+    return { code: details.poolError.code, message: details.poolError.message };
+  const status = details.statuses[0];
+
+  if (status === 401 || status === 403)
     return {
       code: 'AUTH_FAILED',
       message: 'API từ chối xác thực. Kiểm tra key và quyền truy cập model.',
     };
-  if (e.status === 404)
+  if (status === 404)
     return {
       code: 'NOT_FOUND',
       message: 'Không tìm thấy endpoint hoặc model. Kiểm tra base URL và model ID.',
     };
-  if (e.status === 429)
+  if (status === 429)
     return { code: 'RATE_LIMIT', message: 'Nhà cung cấp báo giới hạn lượt gọi hoặc hết quota.' };
-  if (e.status === 400 || e.status === 422)
+  if (status === 400 || status === 422)
     return {
       code: 'INCOMPATIBLE_REQUEST',
       message:
         'API không chấp nhận tham số. Kiểm tra model, giới hạn token và các tùy chọn tương thích.',
     };
-  if (e.status && e.status >= 500)
+  if (status && status >= 500)
     return { code: 'UPSTREAM_ERROR', message: 'Máy chủ API đang báo lỗi. Có thể thử lại sau.' };
-  if (e.name?.includes('Abort') || e.name?.includes('Timeout'))
+
+  if (
+    details.identifiers.some((value) =>
+      matchesIdentifier(value, [
+        'authentication_error',
+        'authentication_failed',
+        'invalid_api_key',
+        'invalid_authentication',
+        'unauthorized',
+        'forbidden',
+        'permission_denied',
+        'access_denied',
+      ]),
+    ) ||
+    details.messages.some((value) =>
+      /\b(?:unauthori[sz]ed|forbidden|permission[ _-]+denied|access[ _-]+denied|authentication[ _-]+(?:error|failed|required)|(?:invalid|incorrect|missing|expired|revoked)[ _-]+(?:api[ _-]?key|token|credentials?))\b/i.test(
+        value,
+      ),
+    )
+  )
+    return {
+      code: 'AUTH_FAILED',
+      message: 'API từ chối xác thực. Kiểm tra key và quyền truy cập model.',
+    };
+
+  if (
+    details.identifiers.some((value) =>
+      matchesIdentifier(value, [
+        'rate_limit',
+        'rate_limit_error',
+        'rate_limit_exceeded',
+        'too_many_requests',
+        'quota_exceeded',
+        'insufficient_quota',
+        'billing_hard_limit_reached',
+      ]),
+    ) ||
+    details.messages.some((value) =>
+      /\b(?:rate[ _-]?limit(?:ed|[ _-]+(?:error|exceeded))?|too[ _-]+many[ _-]+requests|quota[ _-]+(?:(?:has[ _-]+been)[ _-]+)?(?:exceeded|exhausted)|insufficient[ _-]+quota)\b/i.test(
+        value,
+      ),
+    )
+  )
+    return { code: 'RATE_LIMIT', message: 'Nhà cung cấp báo giới hạn lượt gọi hoặc hết quota.' };
+
+  if (
+    details.identifiers.some(
+      (value) =>
+        matchesIdentifier(value, [
+          'abort_error',
+          'timeout',
+          'timeout_error',
+          'request_timeout',
+          'etimedout',
+          'econnaborted',
+          'und_err_connect_timeout',
+          'und_err_headers_timeout',
+          'und_err_body_timeout',
+        ]) ||
+        value.endsWith('_timeout_error') ||
+        value.endsWith('_abort_error'),
+    ) ||
+    details.messages.some((value) =>
+      /\b(?:timed[ _-]+out|timeout(?:[ _-]+error)?|deadline[ _-]+exceeded|request[ _-]+(?:was[ _-]+)?aborted)\b/i.test(
+        value,
+      ),
+    )
+  )
     return { code: 'TIMEOUT', message: 'Yêu cầu hết thời gian chờ hoặc đã bị hủy.' };
+
+  if (
+    details.identifiers.some((value) =>
+      matchesIdentifier(value, [
+        'upstream_error',
+        'server_error',
+        'internal_server_error',
+        'service_unavailable',
+        'temporarily_unavailable',
+        'overloaded',
+        'overloaded_error',
+        'capacity_exceeded',
+        'engine_overloaded',
+      ]),
+    ) ||
+    details.messages.some((value) =>
+      /\b(?:upstream[ _-]+error|service(?:[ _-]+is)?(?:[ _-]+temporarily)?[ _-]+unavailable|temporarily[ _-]+unavailable|servers?[ _-]+(?:(?:are|is)[ _-]+)?(?:currently[ _-]+)?overloaded|overloaded|capacity[ _-]+exceeded)\b/i.test(
+        value,
+      ),
+    )
+  )
+    return { code: 'UPSTREAM_ERROR', message: 'Máy chủ API đang báo lỗi. Có thể thử lại sau.' };
+
+  if (
+    details.identifiers.some((value) =>
+      matchesIdentifier(value, ['not_found', 'not_found_error', 'model_not_found']),
+    )
+  )
+    return {
+      code: 'NOT_FOUND',
+      message: 'Không tìm thấy endpoint hoặc model. Kiểm tra base URL và model ID.',
+    };
+
+  if (
+    details.identifiers.some((value) =>
+      matchesIdentifier(value, [
+        'bad_request',
+        'bad_request_error',
+        'invalid_request',
+        'invalid_request_error',
+        'unprocessable_entity',
+      ]),
+    )
+  )
+    return {
+      code: 'INCOMPATIBLE_REQUEST',
+      message:
+        'API không chấp nhận tham số. Kiểm tra model, giới hạn token và các tùy chọn tương thích.',
+    };
+
   return {
     code: 'CONNECTION_FAILED',
     message:
       'Không kết nối hoặc không đọc được phản hồi API. Kiểm tra địa chỉ, DNS, cổng, chứng chỉ và dịch vụ đang chạy.',
   };
+}
+
+type ErrorDetails = {
+  statuses: number[];
+  identifiers: string[];
+  messages: string[];
+  poolError?: PoolError;
+};
+
+function collectErrorDetails(error: unknown): ErrorDetails {
+  const details: ErrorDetails = { statuses: [], identifiers: [], messages: [] };
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: error, depth: 0 }];
+  const seen = new Set<object>();
+
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (
+      !current.value ||
+      (typeof current.value !== 'object' && typeof current.value !== 'function')
+    )
+      continue;
+    const record = current.value as Record<string, unknown>;
+    if (seen.has(record)) continue;
+    seen.add(record);
+
+    if (record instanceof PoolError)
+      return {
+        ...details,
+        poolError: record,
+      };
+
+    const status = record.status;
+    if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599)
+      details.statuses.push(status);
+
+    for (const field of ['type', 'code', 'name'] as const) {
+      const value = record[field];
+      if (typeof value === 'string' && value.length <= 200)
+        details.identifiers.push(normalize(value));
+    }
+    if (typeof record.message === 'string' && record.message.length <= 2_000)
+      details.messages.push(record.message);
+
+    if (current.depth < 4)
+      for (const field of ['cause', 'error', 'response'] as const)
+        queue.push({ value: record[field], depth: current.depth + 1 });
+  }
+
+  return details;
+}
+
+function normalize(value: string) {
+  return value
+    .trim()
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+function matchesIdentifier(value: string, expected: string[]) {
+  return expected.includes(value);
 }

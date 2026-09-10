@@ -29,6 +29,8 @@ Mọi cấu hình hiện có và model thêm về sau qua pool đều đi qua `m
 
 Model ID lấy từ server hoặc tài liệu tài khoản, không dùng danh sách model giả. `/models` có thể chứa cả model không hỗ trợ chat: cần gửi thử đúng model. Preset là giá trị ban đầu; khả năng tương thích phụ thuộc phiên bản server/model. Trong tùy chọn nâng cao có thể đổi `max_tokens` / `max_completion_tokens`, bật/tắt `stream_options.include_usage` và gửi `store:false` khi server hỗ trợ. Chưa hỗ trợ giao thức riêng của Anthropic hoặc endpoint chỉ có Responses.
 
+Danh sách model tải được không có nghĩa backend completion đang khỏe. Mã `UPSTREAM_ERROR` có thể đến từ HTTP 5xx hoặc từ một sự kiện lỗi nằm giữa stream HTTP 200; `TIMEOUT`, `RATE_LIMIT`, `AUTH_FAILED` và `INCOMPATIBLE_REQUEST` được hiển thị riêng. Ứng dụng chỉ trả thông báo đã chuẩn hóa và không đưa nội dung lỗi thô của nhà cung cấp ra chat.
+
 `localhost` là máy đang chạy **API NestJS**, không phải máy trình duyệt. Khi API chạy Docker, dùng địa chỉ mạng riêng truy cập được từ container hoặc `host.docker.internal` nếu Docker đã cấu hình ánh xạ này. Kiểm tra cổng, firewall và model đã được tải ở Ollama/vLLM.
 
 ## Lựa chọn và giới hạn
@@ -36,6 +38,7 @@ Model ID lấy từ server hoặc tài liệu tài khoản, không dùng danh s�
 - **Thủ công:** một cấu hình cho mỗi nhóm câu hỏi; hai nhóm có thể dùng chung API.
 - **Phân phối lần lượt:** chọn nhiều API đã kiểm tra cho mỗi nhóm. Con trỏ lượt lưu trong database. Bỏ qua cấu hình tắt, cần thử lại, đang đủ lượt đồng thời hoặc tạm nghỉ **trước khi gửi**.
 - Mỗi yêu cầu chỉ gửi đến một API. Khi API đó lỗi, chat hiện lỗi và nút thử lại, không tạo câu trả lời thay thế và không tự gửi lại cùng dữ liệu sang API khác. Sau ba lỗi liên tiếp, cấu hình tạm nghỉ 30 giây; nút gửi thử cho phép kiểm tra lại sớm.
+- Một lần gửi thử thành công ở phiên bản cấu hình hiện tại đánh dấu API **sẵn sàng phục vụ chat**. Lần gửi thử lỗi sau đó vẫn được hiển thị để chẩn đoán nhưng không xóa trạng thái sẵn sàng đã xác nhận; sửa model, endpoint, key hoặc tùy chọn sẽ tăng phiên bản và bắt buộc gửi thử thành công lại.
 - Pool tự động phải cùng phạm vi mạng. Với `LLM_PROVIDER=local`, mọi yêu cầu cloud bị chặn, kể cả gửi thử và tải model. Cấu hình gắn nhãn nội bộ chỉ được kết nối loopback/mạng riêng; nhãn không cho phép kết nối địa chỉ Internet.
 - Mỗi lần sửa cấu hình tăng phiên bản và xóa kết quả kiểm thử cũ. Cấu hình đang được chọn sẽ cần thử lại trước khi tiếp tục dùng. Muốn xóa, gỡ khỏi cả hai nhóm trước; đang xử lý yêu cầu thì không được sửa/xóa.
 - Giới hạn 100 cấu hình, 20 API mỗi nhóm, 1–50 yêu cầu đồng thời trên từng cấu hình, timeout tổng 1–120 giây và tối đa 8.192 output token. Giới hạn đồng thời/tạm nghỉ hiện nằm trong **một tiến trình API**; cần cơ chế phân tán trước khi chạy nhiều replica. Ngân sách và con trỏ phân phối được lưu trong database.

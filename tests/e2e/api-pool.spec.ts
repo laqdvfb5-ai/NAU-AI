@@ -91,7 +91,7 @@ test('admin configures API, discovers model, streams test and uses it in actual 
     await page.getByRole('button', { name: 'Gửi thử API', exact: true }).click();
     await expect(page.locator('.pool-test-result')).toContainText('Nhận được phản hồi từ API');
     await expect(page.locator('.pool-reply')).toContainText('PHẢN HỒI TỪ SERVER KIỂM THỬ');
-    await expect(card).toContainText('Đã kết nối');
+    await expect(card).toContainText('Sẵn sàng phục vụ chat');
     await page.getByRole('switch', { name: 'Bật pool phục vụ chat' }).check();
     await page.getByLabel('Cách chọn API', { exact: true }).selectOption('manual');
     await page.getByLabel('Câu hỏi thông thường', { exact: true }).selectOption(id);

@@ -33,6 +33,7 @@ import { KnowledgeService } from './knowledge.js';
 import { IngestionService, validateSourceUrl } from './ingestion.js';
 import { DisabledActionRegistry } from './actions.js';
 import { ChatService } from './chat.js';
+import { ChatModelException, publicChatError } from './chat-errors.js';
 import type { RulePack } from '@nau/domain';
 import { createStudentProvider } from './student-provider.js';
 import { ApiPoolService, PooledLLM } from './api-pool.js';
@@ -85,7 +86,10 @@ class Errors implements ExceptionFilter {
     response.status(status).json({
       statusCode: status,
       message,
-      ...(error instanceof PoolError ? { code: error.code } : {}),
+      ...(error instanceof PoolError || error instanceof ChatModelException
+        ? { code: error.code }
+        : {}),
+      ...(error instanceof ChatModelException ? { retryable: error.retryable } : {}),
     });
   }
 }
@@ -210,12 +214,7 @@ class ApiController {
       send('answer', answer);
       send('done', {});
     } catch (error) {
-      send('error', {
-        message:
-          error instanceof HttpException
-            ? error.message
-            : 'Không thể trả lời lúc này. Vui lòng thử lại.',
-      });
+      send('error', publicChatError(error));
     } finally {
       clearInterval(heartbeat);
       res.end();

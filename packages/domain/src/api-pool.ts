@@ -36,6 +36,7 @@ export interface ApiTestResult {
 export interface ApiProfile extends ApiProfileConfig {
   id: string;
   revision: number;
+  ready: boolean;
   hasKey: boolean;
   createdAt: string;
   updatedAt: string;

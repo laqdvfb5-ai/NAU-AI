@@ -143,7 +143,7 @@ test('progress during generation and model failure retry without a canned answer
   await page.getByRole('textbox', { name: 'Câu hỏi của bạn', exact: true }).fill('Cảm ơn bạn');
   await page.getByRole('button', { name: 'Gửi câu hỏi', exact: true }).click();
   await expect(page.locator('.chat-page').getByRole('alert')).toContainText(
-    'Model AI chưa trả lời được',
+    'Máy chủ API đang báo lỗi. Có thể thử lại sau.',
   );
   await expect(page.locator('.message.assistant')).toHaveCount(1);
   await expect(page.locator('.stream-preview')).toHaveCount(0);

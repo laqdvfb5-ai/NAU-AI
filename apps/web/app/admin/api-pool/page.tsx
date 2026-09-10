@@ -123,6 +123,7 @@ export default function ApiPoolPage() {
       const {
         id,
         revision,
+        ready,
         hasKey,
         createdAt,
         updatedAt,
@@ -245,8 +246,7 @@ export default function ApiPoolPage() {
       controller.current = null;
     }
   }
-  const tested = (profile: ApiProfile) =>
-    profile.enabled && profile.lastTest?.ok && profile.lastTest.revision === profile.revision;
+  const isReady = (profile: ApiProfile) => profile.ready;
   function setupMessage(profile: ApiProfile) {
     if (!profile.enabled) return 'Cấu hình đang tắt. Bật cấu hình trong mục Sửa trước khi gửi thử.';
     if (!profile.model) return 'Chưa chọn model. Tải danh sách model rồi chọn model trong mục Sửa.';
@@ -328,7 +328,7 @@ export default function ApiPoolPage() {
               <div>
                 <CheckCircle2 size={19} />
                 <span>
-                  <b>{data.profiles.filter(tested).length}</b> đã gửi thử thành công
+                  <b>{data.profiles.filter(isReady).length}</b> sẵn sàng phục vụ chat
                 </span>
               </div>
               <div>
@@ -391,7 +391,7 @@ export default function ApiPoolPage() {
                   const pending = setupMessage(profile);
                   const active =
                     data.routing.enabled &&
-                    tested(profile) &&
+                    isReady(profile) &&
                     (data.routing.simple.includes(profile.id) ||
                       data.routing.complex.includes(profile.id));
                   return (
@@ -419,7 +419,7 @@ export default function ApiPoolPage() {
                             'status-pill ' +
                             (pending
                               ? 'insufficient'
-                              : tested(profile)
+                              : isReady(profile)
                                 ? 'passed'
                                 : profile.lastTest?.ok === false
                                   ? 'failed'
@@ -432,11 +432,11 @@ export default function ApiPoolPage() {
                               ? 'Cần hoàn thiện cấu hình'
                               : active
                                 ? 'Đang phục vụ chat'
-                                : tested(profile)
-                                  ? 'Đã kết nối'
+                                : isReady(profile)
+                                  ? 'Sẵn sàng phục vụ chat'
                                   : profile.lastTest?.ok === false
-                                    ? 'Gửi thử chưa thành công'
-                                    : 'Chưa gửi thử'}
+                                    ? 'Chưa sẵn sàng'
+                                    : 'Chưa gửi thử thành công'}
                         </span>
                       </div>
                       <div className="pool-endpoint">
@@ -472,7 +472,8 @@ export default function ApiPoolPage() {
                       {pending && <div className="alert">{pending}</div>}
                       {!pending && profile.lastTest && !profile.lastTest.ok && (
                         <div className="pool-inline-error">
-                          {profile.lastTest.errorCode}: {profile.lastTest.message}
+                          Lần thử gần nhất · {profile.lastTest.errorCode}:{' '}
+                          {profile.lastTest.message}
                         </div>
                       )}
                       {profile.cooldownUntil && (
@@ -721,9 +722,9 @@ export default function ApiPoolPage() {
                         >
                           <option value="">Chọn API đã kiểm tra</option>
                           {data.profiles.map((p) => (
-                            <option key={p.id} value={p.id} disabled={!tested(p)}>
+                            <option key={p.id} value={p.id} disabled={!isReady(p)}>
                               {p.name} · {p.model || 'chưa chọn model'}
-                              {!tested(p) ? ' · cần gửi thử' : ''}
+                              {!isReady(p) ? ' · chưa sẵn sàng' : ''}
                             </option>
                           ))}
                         </select>
@@ -733,7 +734,7 @@ export default function ApiPoolPage() {
                             <label key={p.id}>
                               <input
                                 type="checkbox"
-                                disabled={Boolean(busy) || !tested(p)}
+                                disabled={Boolean(busy) || !isReady(p)}
                                 checked={routing[lane].includes(p.id)}
                                 onChange={() => toggleRoute(lane, p.id)}
                               />
@@ -741,7 +742,7 @@ export default function ApiPoolPage() {
                                 {p.name}
                                 <small>
                                   {p.model || 'Chưa chọn model'}
-                                  {!tested(p) ? ' · cần gửi thử' : ''}
+                                  {!isReady(p) ? ' · chưa sẵn sàng' : ''}
                                 </small>
                               </span>
                             </label>

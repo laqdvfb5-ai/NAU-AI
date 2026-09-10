@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -29,6 +30,7 @@ import {
   hasValidNauIdentity,
   type StoredTurn,
 } from './dialogue.js';
+import { ChatModelException, chatFailureLog } from './chat-errors.js';
 export interface ChatProgress {
   stage: 'reasoning' | 'searching' | 'checking' | 'generating' | 'validating';
   message: string;
@@ -60,6 +62,7 @@ export const ownerKey = (session: Session) =>
 const money = (n: number) => new Intl.NumberFormat('vi-VN').format(n) + ' đồng';
 export class ChatService {
   evaluator = new NauAcademicEvaluator();
+  private readonly logger = new Logger(ChatService.name);
   constructor(
     private db: Database,
     private knowledge: KnowledgeService,
@@ -401,11 +404,20 @@ export class ChatService {
               if (!signal?.aborted) onText?.(delta);
             },
       });
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
-      throw new BadGatewayException(
-        'Model AI chưa trả lời được. Bạn có thể thử lại sau hoặc kiểm tra kết nối API trong trang quản trị.',
+      const failure = new ChatModelException(error);
+      this.logger.warn(
+        JSON.stringify(
+          chatFailureLog(failure.publicPayload(), {
+            stage: 'model_generation',
+            mode: this.llm.mode,
+            role: session.identity?.role || 'guest',
+            ephemeral,
+          }),
+        ),
       );
+      throw failure;
     }
     signal?.throwIfAborted();
     if (!response.text?.trim() || response.model === 'evidence' || response.mode === 'evidence')
