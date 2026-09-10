@@ -2,6 +2,8 @@
 
 Website tiếng Việt dành cho Trường Đại học Nghệ An, gồm chat công khai có nguồn, hồ sơ sinh viên, giải thích học vụ, quản trị và khung nhúng. **Bản hiện tại dùng dữ liệu giả; chưa kết nối hệ thống trường.**
 
+Bản pilot đang chạy tại **https://foxllm.wtf**.
+
 ## Chạy trên máy cá nhân
 
 Cần Node.js 24 trở lên. Không cần Docker hoặc khóa API để xem bản thử nghiệm.
