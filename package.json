@@ -1,0 +1,38 @@
+{
+  "name": "nau-ai",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "npm run build -w @nau/domain && concurrently -k -n api,web \"npm run dev -w @nau/api\" \"npm run dev -w @nau/web\"",
+    "start": "concurrently -k -n api,web \"npm run start -w @nau/api\" \"npm run start -w @nau/web\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "build": "npm run build -w @nau/domain && npm run build -w @nau/api && npm run build -w @nau/web",
+    "typecheck": "npm run build -w @nau/domain && npm run typecheck --workspaces --if-present",
+    "test": "npm run build -w @nau/domain && tsx --test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "seed": "npm run build -w @nau/domain && tsx scripts/seed.ts",
+    "evaluate": "npm run build -w @nau/domain && tsx scripts/evaluate.ts",
+    "load": "tsx scripts/load.ts"
+  },
+  "devDependencies": {
+    "@nestjs/platform-express": "12.0.1",
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "@nestjs/platform-express": {
+      "multer": "2.3.0"
+    }
+  }
+}

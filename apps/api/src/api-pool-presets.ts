@@ -1,0 +1,88 @@
+import type { ApiPoolPreset } from '@nau/domain';
+export const API_POOL_PRESETS: ApiPoolPreset[] = [
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    description: 'API OpenAI chính thức; dùng model ID được tài khoản cấp quyền.',
+    docsUrl: 'https://developers.openai.com/api/reference/resources/models/methods/list',
+    defaults: {
+      baseUrl: 'https://api.openai.com/v1',
+      network: 'cloud',
+      auth: 'bearer',
+      tokenParameter: 'max_completion_tokens',
+      includeUsage: true,
+      sendStore: true,
+    },
+  },
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    description: 'Endpoint tương thích OpenAI của Gemini.',
+    docsUrl: 'https://ai.google.dev/gemini-api/docs/openai',
+    defaults: {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      network: 'cloud',
+      auth: 'bearer',
+      tokenParameter: 'max_tokens',
+      includeUsage: true,
+      sendStore: false,
+    },
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    description: 'Chọn model ID và chính sách nhà cung cấp tại tài khoản OpenRouter.',
+    docsUrl: 'https://openrouter.ai/docs/api_reference/overview',
+    defaults: {
+      baseUrl: 'https://openrouter.ai/api/v1',
+      network: 'cloud',
+      auth: 'bearer',
+      tokenParameter: 'max_tokens',
+      includeUsage: true,
+      sendStore: false,
+    },
+  },
+  {
+    id: 'ollama',
+    name: 'Ollama',
+    description: 'Model đang chạy trên máy hoặc mạng nội bộ của bạn.',
+    docsUrl: 'https://docs.ollama.com/api/openai-compatibility',
+    defaults: {
+      baseUrl: 'http://localhost:11434/v1',
+      network: 'local',
+      auth: 'none',
+      tokenParameter: 'max_tokens',
+      includeUsage: true,
+      sendStore: false,
+    },
+  },
+  {
+    id: 'vllm',
+    name: 'vLLM',
+    description: 'Máy chủ inference riêng có API tương thích OpenAI.',
+    docsUrl: 'https://docs.vllm.ai/en/latest/serving/openai_compatible_server/',
+    defaults: {
+      baseUrl: 'http://localhost:8000/v1',
+      network: 'local',
+      auth: 'none',
+      tokenParameter: 'max_tokens',
+      includeUsage: true,
+      sendStore: false,
+    },
+  },
+  {
+    id: 'compatible',
+    name: 'API tương thích OpenAI',
+    description: 'Nhập base URL của LM Studio, gateway hoặc dịch vụ tương thích khác.',
+    docsUrl:
+      'https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create',
+    defaults: {
+      baseUrl: '',
+      network: 'cloud',
+      auth: 'bearer',
+      tokenParameter: 'max_tokens',
+      includeUsage: true,
+      sendStore: false,
+    },
+  },
+];

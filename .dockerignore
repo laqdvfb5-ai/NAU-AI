@@ -1,0 +1,16 @@
+node_modules
+.data
+.env*
+.git
+**/.next
+**/dist
+reports
+test-results
+playwright-report
+backups
+*.log
+deploy/secrets
+*.dump
+*.pem
+*.key
+*.tar.gz

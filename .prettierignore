@@ -1,0 +1,13 @@
+node_modules
+.data
+.next
+**/dist
+**/.next
+reports
+test-results
+playwright-report
+package-lock.json
+evals/*.jsonl
+**/AGENTS.md
+**/CLAUDE.md
+**/next-env.d.ts
