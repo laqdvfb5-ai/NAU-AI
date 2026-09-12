@@ -49,6 +49,14 @@ export class ApiPoolController {
     const session = await this.auth.require(req, 'admin');
     return this.pool.setRouting(body, session.identity.accountId);
   }
+  @Post('policy') async policy(@Req() req: Request, @Body() body: unknown) {
+    const session = await this.auth.require(req, 'admin');
+    return this.pool.setPolicy(body, session.identity.accountId);
+  }
+  @Post('configuration') async configuration(@Req() req: Request, @Body() body: unknown) {
+    const session = await this.auth.require(req, 'admin');
+    return this.pool.setConfiguration(body, session.identity.accountId);
+  }
   @Post('profiles/:id/test') async test(
     @Req() req: Request,
     @Res() res: Response,

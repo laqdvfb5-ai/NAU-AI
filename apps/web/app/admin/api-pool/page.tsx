@@ -32,6 +32,8 @@ import type {
   ApiPoolRouting,
   ApiProfileMetrics,
   ApiTestResult,
+  ApiGatewayMode,
+  ApiGatewayPolicy,
 } from '@nau/domain';
 import { Shell } from '../../../components/shell';
 import { useApp } from '../../../components/app-provider';
@@ -45,8 +47,102 @@ type Overview = {
   metrics: ApiProfileMetrics[];
   budgetUsd: number;
   maxRequestCostUsd: number;
+  policy?: ApiGatewayPolicy;
+  gatewayTelemetry?: unknown;
+  telemetry?: unknown;
+  supportedGatewayModes?: GatewayMode[];
 };
-const fresh = (): ApiProfileConfig => ({
+type GatewayMode = ApiGatewayMode;
+type GatewayProfileFields = {
+  qualityScore: number;
+  allowPersonalData: boolean;
+  trustGroup: string;
+};
+type GatewayProfileConfig = ApiProfileConfig & GatewayProfileFields;
+type UnknownRecord = Record<string, unknown>;
+
+const DEFAULT_POLICY: ApiGatewayPolicy = {
+  schemaVersion: 1,
+  mode: 'off',
+  maxAttempts: 2,
+  totalDeadlineMs: 45000,
+  explorationRate: 0.05,
+  failureThreshold: 3,
+  cooldownSeconds: 30,
+  probeIntervalMinutes: 0,
+  weights: { reliability: 0.35, latency: 0.2, cost: 0.2, load: 0.05, quality: 0.2 },
+};
+const GATEWAY_MODES: {
+  id: GatewayMode;
+  title: string;
+  description: string;
+}[] = [
+  {
+    id: 'off',
+    title: 'Tắt adaptive',
+    description: 'Giữ bộ chọn thủ công hoặc lần lượt hiện tại; mỗi yêu cầu chỉ gọi một API.',
+  },
+  {
+    id: 'shadow',
+    title: 'Shadow',
+    description: 'Chấm điểm và ghi telemetry, nhưng vẫn giao yêu cầu theo bộ chọn hiện tại.',
+  },
+  {
+    id: 'active',
+    title: 'Adaptive',
+    description: 'Chọn API theo điểm thực tế và chuyển tuyến trước khi API bắt đầu trả nội dung.',
+  },
+];
+const normalizePolicy = (value?: Partial<ApiGatewayPolicy>): ApiGatewayPolicy => ({
+  ...DEFAULT_POLICY,
+  ...value,
+  weights: { ...DEFAULT_POLICY.weights, ...value?.weights },
+});
+const record = (value: unknown): UnknownRecord | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as UnknownRecord)
+    : undefined;
+const numberFrom = (source: UnknownRecord | undefined, ...keys: string[]) => {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+};
+const stringFrom = (source: UnknownRecord | undefined, ...keys: string[]) => {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  return undefined;
+};
+const percent = (value: number | undefined) =>
+  value === undefined ? '—' : `${Math.round((value <= 1 ? value * 100 : value) * 10) / 10}%`;
+const ms = (value: number | undefined) =>
+  value === undefined
+    ? '—'
+    : value >= 1000
+      ? `${(value / 1000).toFixed(1)} s`
+      : `${Math.round(value)} ms`;
+const healthLabel = (value: string | undefined) => {
+  const labels: Record<string, string> = {
+    healthy: 'Khỏe',
+    warming: 'Đang học',
+    degraded: 'Suy giảm',
+    saturated: 'Đầy tải',
+    cooldown: 'Tạm nghỉ',
+    unavailable: 'Không khả dụng',
+    open: 'Tạm nghỉ',
+    half_open: 'Thăm dò',
+    closed: 'Khỏe',
+  };
+  return value ? labels[value.toLowerCase()] || value : 'Chưa có dữ liệu';
+};
+const fresh = (): GatewayProfileConfig => ({
   name: 'OpenAI',
   preset: 'openai',
   baseUrl: 'https://api.openai.com/v1',
@@ -63,7 +159,239 @@ const fresh = (): ApiProfileConfig => ({
   tokenParameter: 'max_completion_tokens',
   includeUsage: true,
   sendStore: true,
+  qualityScore: 70,
+  allowPersonalData: false,
+  trustGroup: '',
 });
+function collectionEntry(value: unknown, providerId: string, lane: 'simple' | 'complex') {
+  if (Array.isArray(value))
+    return value.map(record).find((item) => {
+      const id = stringFrom(item, 'providerId', 'provider_id', 'profileId', 'id');
+      const itemLane = stringFrom(item, 'lane');
+      return id === providerId && (!itemLane || itemLane === lane);
+    });
+  const values = record(value);
+  return record(values?.[providerId]);
+}
+function laneTelemetry(telemetry: unknown, lane: 'simple' | 'complex') {
+  const root = record(telemetry),
+    lanes = record(root?.lanes);
+  return record(lanes?.[lane]) || record(root?.[lane]);
+}
+function providerTelemetry(telemetry: unknown, lane: 'simple' | 'complex', providerId: string) {
+  const root = record(telemetry),
+    laneData = laneTelemetry(telemetry, lane),
+    sources = [
+      root?.providers,
+      root?.providerStates,
+      root?.states,
+      root?.candidates,
+      root?.scores,
+      root?.recentAttempts,
+      laneData?.providers,
+      laneData?.states,
+      laneData?.candidates,
+      laneData?.scores,
+    ];
+  const merged: UnknownRecord = {};
+  for (const source of sources) {
+    const item = collectionEntry(source, providerId, lane);
+    if (item) Object.assign(merged, item);
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+function recentLaneEvents(telemetry: unknown, lane: 'simple' | 'complex') {
+  const root = record(telemetry),
+    laneData = laneTelemetry(telemetry, lane),
+    sources = [
+      laneData?.recentAttempts,
+      laneData?.attempts,
+      laneData?.recentDecisions,
+      laneData?.selections,
+      root?.recentAttempts,
+      root?.attempts,
+      root?.recentDecisions,
+      root?.selections,
+    ];
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue;
+    return source
+      .map(record)
+      .filter((item): item is UnknownRecord => Boolean(item))
+      .filter((item) => !stringFrom(item, 'lane') || stringFrom(item, 'lane') === lane)
+      .slice(0, 4);
+  }
+  return [];
+}
+function ProviderTelemetryView({
+  telemetry,
+  lane,
+  profile,
+}: {
+  telemetry: unknown;
+  lane: 'simple' | 'complex';
+  profile: ApiProfile;
+}) {
+  const item = providerTelemetry(telemetry, lane, profile.id),
+    state = record(item?.state) || record(item?.metrics) || item,
+    components = record(item?.components) || record(record(item?.score)?.components),
+    rawHealth = stringFrom(item, 'health', 'circuitState', 'circuit_state'),
+    fallbackHealth = profile.cooldownUntil
+      ? 'cooldown'
+      : profile.inFlight >= profile.maxConcurrent
+        ? 'saturated'
+        : profile.ready
+          ? 'warming'
+          : 'unavailable',
+    health = rawHealth || fallbackHealth,
+    score = numberFrom(item, 'score', 'totalScore', 'selection_score'),
+    nestedScore = numberFrom(record(item?.score), 'score', 'total'),
+    successCount = numberFrom(state, 'successCount', 'success_count', 'successes'),
+    failureCount = numberFrom(state, 'failureCount', 'failure_count', 'failures'),
+    samples =
+      numberFrom(item, 'sampleCount', 'samples', 'recentCalls') ??
+      (successCount !== undefined || failureCount !== undefined
+        ? (successCount || 0) + (failureCount || 0)
+        : undefined),
+    successRate =
+      numberFrom(item, 'successRate', 'success_ewma', 'reliability') ??
+      (samples ? (successCount || 0) / samples : undefined),
+    latency = numberFrom(
+      state,
+      'ewmaLatencyMs',
+      'latencyEwmaMs',
+      'latency_ewma_ms',
+      'averageLatencyMs',
+    ),
+    firstToken = numberFrom(
+      state,
+      'ewmaFirstTokenMs',
+      'ewmaTtftMs',
+      'firstTokenEwmaMs',
+      'first_token_ewma_ms',
+    ),
+    cost = numberFrom(item, 'expectedCostUsd', 'averageCostUsd', 'costUsd', 'cost_ewma_usd'),
+    active = numberFrom(item, 'activeLeases', 'inFlight') ?? profile.inFlight,
+    capacity = numberFrom(item, 'maxConcurrent', 'capacity') ?? profile.maxConcurrent,
+    selections = numberFrom(item, 'selectionCount', 'selections', 'recentSelections'),
+    scoreValue = score ?? nestedScore,
+    componentEntries = (['reliability', 'latency', 'cost', 'load', 'quality'] as const).flatMap(
+      (key) => {
+        const value = numberFrom(components, key);
+        return value === undefined ? [] : ([[key, value]] as const);
+      },
+    ),
+    componentLabels = {
+      reliability: 'Tin cậy',
+      latency: 'Tốc độ',
+      cost: 'Chi phí',
+      load: 'Tải',
+      quality: 'Chất lượng',
+    };
+  return (
+    <div className="adaptive-provider-telemetry" aria-live="polite">
+      <div className="adaptive-health-line">
+        <span className={`adaptive-health ${health.toLowerCase().replace(/[^a-z_]+/g, '-')}`}>
+          <span />
+          {healthLabel(health)}
+        </span>
+        {scoreValue !== undefined && (
+          <strong>Điểm {Math.round(scoreValue <= 1 ? scoreValue * 100 : scoreValue)}</strong>
+        )}
+      </div>
+      <div className="adaptive-live-metrics">
+        {samples !== undefined && <span>{samples} mẫu</span>}
+        {successRate !== undefined && <span>Thành công {percent(successRate)}</span>}
+        {latency !== undefined && <span>EWMA {ms(latency)}</span>}
+        {firstToken !== undefined && <span>TTFT {ms(firstToken)}</span>}
+        <span>
+          Tải {active}/{capacity}
+        </span>
+        {cost !== undefined && <span>{usd(cost)} / lượt</span>}
+        {selections !== undefined && <span>Đã chọn {selections} lần</span>}
+      </div>
+      {componentEntries.length > 0 && (
+        <div className="adaptive-score-components">
+          {componentEntries.map(([key, value]) => (
+            <span key={key} title={`${componentLabels[key]}: ${percent(value)}`}>
+              {componentLabels[key]} {Math.round(value * 100)}
+            </span>
+          ))}
+        </div>
+      )}
+      {item && stringFrom(item, 'reason', 'exclusionReason') && (
+        <small className="adaptive-reason">{stringFrom(item, 'reason', 'exclusionReason')}</small>
+      )}
+    </div>
+  );
+}
+function RecentGatewayEvents({
+  telemetry,
+  lane,
+  profiles,
+}: {
+  telemetry: unknown;
+  lane: 'simple' | 'complex';
+  profiles: ApiProfile[];
+}) {
+  const events = recentLaneEvents(telemetry, lane);
+  if (!events.length) return null;
+  return (
+    <div className="adaptive-recent-events">
+      <h5>Chọn và chuyển tuyến gần đây</h5>
+      <ol>
+        {events.map((event, index) => {
+          const providerId = stringFrom(
+              event,
+              'providerId',
+              'provider_id',
+              'selectedProviderId',
+              'toProviderId',
+              'profileId',
+            ),
+            provider = profiles.find((profile) => profile.id === providerId),
+            attempt = numberFrom(event, 'attemptNo', 'attempt_no', 'attempt'),
+            outcome = stringFrom(event, 'outcome', 'status', 'reason'),
+            errorCode = stringFrom(event, 'errorCode', 'error_code'),
+            createdAt = stringFrom(event, 'createdAt', 'created_at', 'selectedAt', 'at'),
+            scoreRecord = record(event.score),
+            score =
+              numberFrom(scoreRecord, 'score', 'total') ??
+              numberFrom(event, 'totalScore', 'selection_score'),
+            isFailover =
+              (attempt !== undefined && attempt > 1) ||
+              stringFrom(event, 'kind', 'type')?.toLowerCase().includes('failover');
+          return (
+            <li key={stringFrom(event, 'id', 'requestId') || `${createdAt || 'event'}-${index}`}>
+              <span className={isFailover ? 'adaptive-event-kind failover' : 'adaptive-event-kind'}>
+                {isFailover ? `Chuyển tuyến #${attempt || 2}` : 'Chọn'}
+              </span>
+              <b>{provider?.name || providerId || 'Provider'}</b>
+              <small>
+                {[
+                  outcome,
+                  errorCode,
+                  score === undefined ? '' : `điểm ${Math.round(score <= 1 ? score * 100 : score)}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </small>
+              {createdAt && (
+                <time dateTime={createdAt}>
+                  {new Date(createdAt).toLocaleTimeString('vi-VN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  })}
+                </time>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
 const initialRouting: ApiPoolRouting = {
   enabled: false,
   strategy: 'manual',
@@ -75,12 +403,13 @@ export default function ApiPoolPage() {
   const { identity, loading, refresh: refreshApp } = useApp();
   const [data, setData] = useState<Overview | null>(null),
     [routing, setRouting] = useState<ApiPoolRouting>(initialRouting),
+    [policy, setPolicy] = useState<ApiGatewayPolicy>(DEFAULT_POLICY),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(''),
     [editing, setEditing] = useState<ApiProfile | null>(null),
     [editorOpen, setEditorOpen] = useState(false),
-    [form, setForm] = useState<ApiProfileConfig>(fresh),
+    [form, setForm] = useState<GatewayProfileConfig>(fresh),
     [key, setKey] = useState(''),
     [clearKey, setClearKey] = useState(false),
     [formError, setFormError] = useState(''),
@@ -93,16 +422,32 @@ export default function ApiPoolPage() {
     [partial, setPartial] = useState(''),
     [deleting, setDeleting] = useState<ApiProfile | null>(null);
   const controller = useRef<AbortController | null>(null);
-  async function refresh(preserveRouting = false) {
+  async function refresh(preserveConfiguration = false) {
     const value = await api<Overview>('/admin/api-pool');
     setData(value);
-    if (!preserveRouting) setRouting(value.routing);
+    if (!preserveConfiguration) {
+      setRouting(value.routing);
+      setPolicy(normalizePolicy(value.policy));
+    }
     setTestId((id) => (value.profiles.some((p) => p.id === id) ? id : value.profiles[0]?.id || ''));
   }
   useEffect(() => {
     if (identity?.role === 'admin') void refresh().catch((e) => setError(e.message));
     return () => controller.current?.abort();
   }, [identity]);
+  useEffect(() => {
+    if (identity?.role !== 'admin' || policy.mode === 'off') return;
+    const poll = () => {
+      if (document.visibilityState === 'visible')
+        void refresh(true).catch((e) => setError((current) => current || e.message));
+    };
+    const timer = window.setInterval(poll, 5000);
+    document.addEventListener('visibilitychange', poll);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', poll);
+    };
+  }, [identity?.role, policy.mode]);
   async function run(id: string, fn: () => Promise<unknown>, message: string) {
     setBusy(id);
     setError('');
@@ -132,7 +477,14 @@ export default function ApiPoolPage() {
         cooldownUntil,
         ...config
       } = profile;
-      setForm(config);
+      const gateway = config as ApiProfileConfig & Partial<GatewayProfileFields>;
+      setForm({
+        ...fresh(),
+        ...gateway,
+        qualityScore: gateway.qualityScore ?? fresh().qualityScore,
+        allowPersonalData: gateway.allowPersonalData ?? false,
+        trustGroup: gateway.trustGroup ?? '',
+      });
     } else setForm(fresh());
     setKey('');
     setClearKey(false);
@@ -144,8 +496,10 @@ export default function ApiPoolPage() {
     setBusy('save');
     setFormError('');
     try {
+      const { trustGroup, ...profileConfig } = form;
       const body = {
-        ...form,
+        ...profileConfig,
+        ...(trustGroup.trim() ? { trustGroup: trustGroup.trim() } : {}),
         ...(key ? { apiKey: key } : {}),
         ...(clearKey ? { clearKey: true } : {}),
         ...(editing ? { revision: editing.revision } : {}),
@@ -266,6 +620,70 @@ export default function ApiPoolPage() {
       [lane]: r[lane].includes(id) ? r[lane].filter((x) => x !== id) : [...r[lane], id],
     }));
   }
+  function changeGatewayMode(mode: GatewayMode) {
+    setPolicy((current) => ({ ...current, mode }));
+    if (mode === 'off')
+      setRouting((current) =>
+        current.strategy === 'manual'
+          ? { ...current, simple: current.simple.slice(0, 1), complex: current.complex.slice(0, 1) }
+          : current,
+      );
+  }
+  function changeRoutingStrategy(strategy: ApiPoolRouting['strategy']) {
+    setRouting((current) => ({
+      ...current,
+      strategy,
+      ...(strategy === 'manual' && policy.mode === 'off'
+        ? { simple: current.simple.slice(0, 1), complex: current.complex.slice(0, 1) }
+        : {}),
+    }));
+  }
+  function setPolicyNumber<
+    K extends keyof Omit<ApiGatewayPolicy, 'schemaVersion' | 'mode' | 'weights'>,
+  >(key: K, value: number) {
+    setPolicy((current) => ({ ...current, [key]: value }));
+  }
+  function setPolicyWeight(key: keyof ApiGatewayPolicy['weights'], percentValue: number) {
+    setPolicy((current) => ({
+      ...current,
+      weights: { ...current.weights, [key]: Math.max(0, percentValue) / 100 },
+    }));
+  }
+  const telemetry = data?.gatewayTelemetry ?? data?.telemetry;
+  const adaptiveConfigured = policy.mode !== 'off';
+  const weightTotal = Object.values(policy.weights).reduce((total, value) => total + value, 0);
+  const configurationIssues: string[] = [];
+  if (routing.enabled) {
+    for (const lane of ['simple', 'complex'] as const) {
+      if (!routing[lane].length)
+        configurationIssues.push(
+          `${lane === 'simple' ? 'Câu hỏi thông thường' : 'Câu hỏi tổng hợp'} chưa có API.`,
+        );
+      const selected = (data?.profiles || []).filter((profile) =>
+        routing[lane].includes(profile.id),
+      );
+      if (selected.some((profile) => !isReady(profile)))
+        configurationIssues.push(
+          `${lane === 'simple' ? 'Tuyến thông thường' : 'Tuyến tổng hợp'} có API chưa sẵn sàng.`,
+        );
+      if (adaptiveConfigured && new Set(selected.map((profile) => profile.network)).size > 1)
+        configurationIssues.push(
+          `${lane === 'simple' ? 'Tuyến thông thường' : 'Tuyến tổng hợp'} đang trộn API nội bộ và bên ngoài.`,
+        );
+    }
+    if (
+      routing.strategy === 'round_robin' &&
+      new Set(
+        (data?.profiles || [])
+          .filter((profile) => [...routing.simple, ...routing.complex].includes(profile.id))
+          .map((profile) => profile.network),
+      ).size > 1
+    )
+      configurationIssues.push(
+        'Phân phối lần lượt không thể trộn API nội bộ và bên ngoài giữa hai tuyến.',
+      );
+  }
+  if (weightTotal <= 0) configurationIssues.push('Tổng trọng số adaptive phải lớn hơn 0.');
   if (!loading && identity?.role !== 'admin')
     return (
       <Shell title="Pool API & model">
@@ -389,14 +807,14 @@ export default function ApiPoolPage() {
                 {data.profiles.map((profile) => {
                   const metrics = data.metrics.find((m) => m.id === profile.id);
                   const pending = setupMessage(profile);
-                  const active =
+                  const candidate =
                     data.routing.enabled &&
                     isReady(profile) &&
                     (data.routing.simple.includes(profile.id) ||
                       data.routing.complex.includes(profile.id));
                   return (
                     <article
-                      className={'pool-profile panel ' + (active ? 'selected-profile' : '')}
+                      className={'pool-profile panel ' + (candidate ? 'selected-profile' : '')}
                       key={profile.id}
                     >
                       <div className="pool-profile-head">
@@ -430,13 +848,17 @@ export default function ApiPoolPage() {
                             ? 'Đang tắt'
                             : pending
                               ? 'Cần hoàn thiện cấu hình'
-                              : active
-                                ? 'Đang phục vụ chat'
-                                : isReady(profile)
-                                  ? 'Sẵn sàng phục vụ chat'
-                                  : profile.lastTest?.ok === false
-                                    ? 'Chưa sẵn sàng'
-                                    : 'Chưa gửi thử thành công'}
+                              : candidate && policy.mode !== 'off'
+                                ? 'Ứng viên adaptive'
+                                : candidate && data.routing.strategy === 'round_robin'
+                                  ? 'Trong vòng phân phối'
+                                  : candidate
+                                    ? 'Được chọn cho chat'
+                                    : isReady(profile)
+                                      ? 'Sẵn sàng'
+                                      : profile.lastTest?.ok === false
+                                        ? 'Chưa sẵn sàng'
+                                        : 'Chưa gửi thử thành công'}
                         </span>
                       </div>
                       <div className="pool-endpoint">
@@ -454,6 +876,15 @@ export default function ApiPoolPage() {
                               ? 'Đã lưu key'
                               : 'Chưa có key'}
                         </span>
+                      </div>
+                      <div className="gateway-profile-meta">
+                        <span>Chất lượng {profile.qualityScore}/100</span>
+                        <span>
+                          {profile.allowPersonalData
+                            ? 'Cho phép dữ liệu cá nhân'
+                            : 'Chỉ dữ liệu công khai'}
+                        </span>
+                        <span>Nhóm tin cậy: {profile.trustGroup || 'riêng cho profile này'}</span>
                       </div>
                       <div className="pool-profile-metrics">
                         <div>
@@ -664,16 +1095,173 @@ export default function ApiPoolPage() {
               <section className="panel">
                 <div className="panel-heading">
                   <div>
-                    <h3>Chọn API phục vụ chat</h3>
-                    <p>Chỉ sử dụng cấu hình đã gửi thử thành công.</p>
+                    <h3>Adaptive AI gateway</h3>
+                    <p>
+                      Chọn chế độ, ứng viên và chính sách điều phối cho các cuộc trò chuyện mới.
+                    </p>
                   </div>
                   <SlidersHorizontal size={21} />
                 </div>
                 <div className="panel-padding">
+                  <fieldset className="gateway-mode-fieldset">
+                    <legend>Chế độ vận hành</legend>
+                    <div className="gateway-mode-options">
+                      {GATEWAY_MODES.filter((mode) =>
+                        data.supportedGatewayModes?.length
+                          ? data.supportedGatewayModes.includes(mode.id)
+                          : true,
+                      ).map((mode) => (
+                        <label
+                          key={mode.id}
+                          className={policy.mode === mode.id ? 'selected' : undefined}
+                        >
+                          <input
+                            type="radio"
+                            name="gateway-mode"
+                            value={mode.id}
+                            checked={policy.mode === mode.id}
+                            disabled={Boolean(busy)}
+                            onChange={() => changeGatewayMode(mode.id)}
+                          />
+                          <span>
+                            <b>{mode.title}</b>
+                            <small>{mode.description}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  {adaptiveConfigured && (
+                    <div className="gateway-policy">
+                      <div className="gateway-policy-heading">
+                        <div>
+                          <b>Chính sách adaptive</b>
+                          <small>
+                            {policy.mode === 'shadow'
+                              ? 'Shadow chỉ đo và lưu quyết định giả lập, không tự chuyển tuyến.'
+                              : 'Chỉ chuyển tuyến khi API lỗi trước token nội dung đầu tiên.'}
+                          </small>
+                        </div>
+                        <span className={`gateway-mode-badge ${policy.mode}`}>
+                          {policy.mode === 'shadow' ? 'SHADOW' : 'ACTIVE'}
+                        </span>
+                      </div>
+                      <div className="gateway-policy-grid">
+                        <label>
+                          Số lần thử tối đa
+                          <input
+                            type="number"
+                            min={1}
+                            max={3}
+                            value={policy.maxAttempts}
+                            onChange={(e) => setPolicyNumber('maxAttempts', Number(e.target.value))}
+                          />
+                        </label>
+                        <label>
+                          Deadline toàn yêu cầu · giây
+                          <input
+                            type="number"
+                            min={5}
+                            max={120}
+                            value={policy.totalDeadlineMs / 1000}
+                            onChange={(e) =>
+                              setPolicyNumber('totalDeadlineMs', Number(e.target.value) * 1000)
+                            }
+                          />
+                        </label>
+                        <label>
+                          Mở circuit sau số lỗi
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={policy.failureThreshold}
+                            onChange={(e) =>
+                              setPolicyNumber('failureThreshold', Number(e.target.value))
+                            }
+                          />
+                        </label>
+                        <label>
+                          Thời gian circuit nghỉ · giây
+                          <input
+                            type="number"
+                            min={5}
+                            max={600}
+                            value={policy.cooldownSeconds}
+                            onChange={(e) =>
+                              setPolicyNumber('cooldownSeconds', Number(e.target.value))
+                            }
+                          />
+                        </label>
+                        <label>
+                          Tỷ lệ khám phá · %
+                          <input
+                            type="number"
+                            min={0}
+                            max={25}
+                            step={0.5}
+                            value={Math.round(policy.explorationRate * 1000) / 10}
+                            onChange={(e) =>
+                              setPolicyNumber('explorationRate', Number(e.target.value) / 100)
+                            }
+                          />
+                        </label>
+                        <label>
+                          Health probe · phút
+                          <input
+                            type="number"
+                            min={0}
+                            max={1440}
+                            value={policy.probeIntervalMinutes}
+                            onChange={(e) =>
+                              setPolicyNumber('probeIntervalMinutes', Number(e.target.value))
+                            }
+                          />
+                        </label>
+                      </div>
+                      <p className="microcopy gateway-probe-note">
+                        Đặt health probe bằng 0 để tắt. Mỗi probe bật sẽ gửi một yêu cầu thật và có
+                        thể phát sinh chi phí.
+                      </p>
+                      <fieldset className="gateway-weight-fieldset">
+                        <legend>Trọng số chấm điểm</legend>
+                        <div className="gateway-weight-grid">
+                          {(
+                            [
+                              ['reliability', 'Tin cậy'],
+                              ['latency', 'Tốc độ'],
+                              ['cost', 'Chi phí'],
+                              ['load', 'Tải'],
+                              ['quality', 'Chất lượng'],
+                            ] as const
+                          ).map(([key, label]) => (
+                            <label key={key}>
+                              {label} · %
+                              <input
+                                type="number"
+                                min={0}
+                                max={1000}
+                                step={1}
+                                value={Math.round(policy.weights[key] * 1000) / 10}
+                                onChange={(e) => setPolicyWeight(key, Number(e.target.value))}
+                              />
+                            </label>
+                          ))}
+                        </div>
+                        <small>
+                          Tổng hiện tại {Math.round(weightTotal * 1000) / 10}%. Server tự chuẩn hóa
+                          về 100% khi lưu.
+                        </small>
+                      </fieldset>
+                    </div>
+                  )}
                   <label className="pool-toggle-row">
                     <span>
                       <b>Bật pool cho website và khung nhúng</b>
-                      <small>Lưu lựa chọn để áp dụng cho các câu hỏi mới.</small>
+                      <small>
+                        Khi tắt, chat dùng provider cấu hình bằng biến môi trường. Chế độ gateway
+                        vẫn được lưu để bật lại sau.
+                      </small>
                     </span>
                     <input
                       type="checkbox"
@@ -685,22 +1273,26 @@ export default function ApiPoolPage() {
                     />
                   </label>
                   <label className="pool-label" htmlFor="pool-strategy">
-                    Cách chọn API
+                    {policy.mode === 'active'
+                      ? 'Bộ chọn dự phòng khi tắt adaptive'
+                      : 'Cách giao yêu cầu thực tế'}
                   </label>
                   <select
                     id="pool-strategy"
                     value={routing.strategy}
                     disabled={Boolean(busy)}
                     onChange={(e) =>
-                      setRouting((r) => ({
-                        ...r,
-                        strategy: e.target.value as ApiPoolRouting['strategy'],
-                        simple: r.simple.slice(0, 1),
-                        complex: r.complex.slice(0, 1),
-                      }))
+                      changeRoutingStrategy(e.target.value as ApiPoolRouting['strategy'])
                     }
                   >
-                    <option value="manual">Chọn thủ công · một API mỗi tuyến</option>
+                    <option value="manual">
+                      Chọn thủ công ·{' '}
+                      {policy.mode === 'active'
+                        ? 'API đầu tiên làm mốc rollback'
+                        : policy.mode === 'shadow'
+                          ? 'API đầu tiên nhận lưu lượng thật'
+                          : 'một API mỗi tuyến'}
+                    </option>
                     <option value="round_robin">Phân phối lần lượt giữa các API</option>
                   </select>
                   {(['simple', 'complex'] as const).map((lane) => (
@@ -708,7 +1300,7 @@ export default function ApiPoolPage() {
                       <label className="pool-label" htmlFor={'route-' + lane}>
                         {lane === 'simple' ? 'Câu hỏi thông thường' : 'Câu hỏi tổng hợp'}
                       </label>
-                      {routing.strategy === 'manual' ? (
+                      {routing.strategy === 'manual' && !adaptiveConfigured ? (
                         <select
                           id={'route-' + lane}
                           value={routing[lane][0] || ''}
@@ -732,22 +1324,72 @@ export default function ApiPoolPage() {
                         <div className="pool-route-options">
                           {data.profiles.map((p) => {
                             const selected = routing[lane].includes(p.id);
+                            const order = routing[lane].indexOf(p.id);
+                            const routeRole = !selected
+                              ? ''
+                              : adaptiveConfigured
+                                ? policy.mode === 'shadow'
+                                  ? routing.strategy === 'manual'
+                                    ? order === 0
+                                      ? 'Nhận lưu lượng thật trong shadow'
+                                      : 'Chỉ được chấm điểm trong shadow'
+                                    : `Trong vòng phân phối và được chấm điểm · #${order + 1}`
+                                  : `Ứng viên adaptive · vị trí cấu hình #${order + 1}`
+                                : `Vị trí phân phối #${order + 1}`;
                             return (
-                              <label key={p.id}>
-                                <input
-                                  type="checkbox"
-                                  disabled={Boolean(busy) || (!isReady(p) && !selected)}
-                                  checked={selected}
-                                  onChange={() => toggleRoute(lane, p.id)}
-                                />
-                                <span>
-                                  {p.name}
-                                  <small>
-                                    {p.model || 'Chưa chọn model'}
-                                    {!isReady(p) ? ' · chưa sẵn sàng' : ''}
-                                  </small>
-                                </span>
-                              </label>
+                              <div
+                                className={
+                                  selected ? 'pool-route-option selected' : 'pool-route-option'
+                                }
+                                key={p.id}
+                              >
+                                <label>
+                                  <input
+                                    type="checkbox"
+                                    disabled={Boolean(busy) || (!isReady(p) && !selected)}
+                                    checked={selected}
+                                    onChange={() => toggleRoute(lane, p.id)}
+                                  />
+                                  <span>
+                                    <b>{p.name}</b>
+                                    <small>
+                                      {p.model || 'Chưa chọn model'}
+                                      {!isReady(p) ? ' · chưa sẵn sàng' : ''}
+                                    </small>
+                                    {routeRole && <em>{routeRole}</em>}
+                                  </span>
+                                </label>
+                                {selected &&
+                                  adaptiveConfigured &&
+                                  routing.strategy === 'manual' &&
+                                  order > 0 && (
+                                    <button
+                                      type="button"
+                                      className="adaptive-promote"
+                                      disabled={Boolean(busy)}
+                                      onClick={() =>
+                                        setRouting((current) => ({
+                                          ...current,
+                                          [lane]: [
+                                            p.id,
+                                            ...current[lane].filter((id) => id !== p.id),
+                                          ],
+                                        }))
+                                      }
+                                    >
+                                      {policy.mode === 'shadow'
+                                        ? 'Đặt làm API nhận lưu lượng thật'
+                                        : 'Đặt làm mốc rollback'}
+                                    </button>
+                                  )}
+                                {selected && adaptiveConfigured && telemetry !== undefined && (
+                                  <ProviderTelemetryView
+                                    telemetry={telemetry}
+                                    lane={lane}
+                                    profile={p}
+                                  />
+                                )}
+                              </div>
                             );
                           })}
                           {!data.profiles.length && (
@@ -755,29 +1397,51 @@ export default function ApiPoolPage() {
                           )}
                         </div>
                       )}
+                      {adaptiveConfigured && (
+                        <RecentGatewayEvents
+                          telemetry={telemetry}
+                          lane={lane}
+                          profiles={data.profiles}
+                        />
+                      )}
                     </div>
                   ))}
-                  <p className="microcopy">
-                    Mỗi yêu cầu gửi tới một API. Nếu API đó lỗi, chat báo lỗi và cho thử lại; không
-                    gửi lại dữ liệu sang API khác. Pool tự động dùng cùng phạm vi nội bộ hoặc bên
-                    ngoài.
+                  <p className="microcopy gateway-routing-note">
+                    {policy.mode === 'active'
+                      ? 'Gateway chấm điểm theo độ tin cậy, độ trễ, chi phí, tải và chất lượng. Chuyển tuyến chỉ xảy ra trước khi có token nội dung; dữ liệu cá nhân không rời nhóm tin cậy ban đầu.'
+                      : policy.mode === 'shadow'
+                        ? 'Gateway tính và lưu điểm cho mọi ứng viên. Lưu lượng thật vẫn đi theo lựa chọn thủ công hoặc lần lượt, không tự chuyển sang API khác.'
+                        : 'Mỗi yêu cầu chỉ gửi tới một API theo lựa chọn hiện tại. Khi API lỗi, chat trả lỗi để người dùng thử lại.'}
                   </p>
+                  {configurationIssues.length > 0 && (
+                    <div className="gateway-validation" role="alert">
+                      <AlertCircle size={16} />
+                      <div>
+                        <b>Chưa thể lưu cấu hình này</b>
+                        <ul>
+                          {configurationIssues.map((issue) => (
+                            <li key={issue}>{issue}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
                   <button
                     className="button primary full"
-                    disabled={Boolean(busy)}
+                    disabled={Boolean(busy) || configurationIssues.length > 0}
                     onClick={() =>
                       void run(
                         'routing',
                         async () => {
-                          await post('/admin/api-pool/routing', routing);
+                          await post('/admin/api-pool/configuration', { routing, policy });
                           await refreshApp();
                         },
-                        'Đã lưu lựa chọn API cho các cuộc trò chuyện mới.',
+                        'Đã lưu cấu hình gateway cho các cuộc trò chuyện mới.',
                       )
                     }
                   >
                     <CheckCircle2 size={16} />
-                    Lưu lựa chọn cho chat
+                    Lưu cấu hình gateway
                   </button>
                 </div>
               </section>
@@ -1006,6 +1670,60 @@ export default function ApiPoolPage() {
                 />
                 Tôi đã kiểm tra giá của model này; nhập 0 nếu dịch vụ thực sự không tính phí API.
               </label>
+              <fieldset className="gateway-profile-settings">
+                <legend>Thuộc tính cho adaptive gateway</legend>
+                <div className="form-grid">
+                  <label>
+                    Prior chất lượng ban đầu · 0–100
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      required
+                      value={form.qualityScore}
+                      onChange={(e) =>
+                        setForm((current) => ({
+                          ...current,
+                          qualityScore: Number(e.target.value),
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Nhóm tin cậy dữ liệu
+                    <input
+                      maxLength={100}
+                      pattern="[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
+                      placeholder="Để trống: tạo nhóm riêng cho profile"
+                      value={form.trustGroup}
+                      onChange={(e) =>
+                        setForm((current) => ({ ...current, trustGroup: e.target.value }))
+                      }
+                    />
+                  </label>
+                </div>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={form.allowPersonalData}
+                    onChange={(e) =>
+                      setForm((current) => ({
+                        ...current,
+                        allowPersonalData: e.target.checked,
+                      }))
+                    }
+                  />
+                  Cho phép API này nhận căn cứ có dữ liệu sinh viên (mặc định tắt). Khi chuyển
+                  tuyến, gateway chỉ dùng API cùng nhóm tin cậy.
+                </label>
+                <p className="microcopy">
+                  Phản hồi 👍/👎 sẽ cập nhật hậu nghiệm chất lượng của provider/revision. Để trống
+                  nhóm tin cậy để hệ thống tạo nhóm riêng theo ID profile. Muốn failover dữ liệu
+                  sinh viên giữa nhiều API, hãy nhập chính xác cùng một nhóm cho các profile đã được
+                  kiểm chứng.
+                </p>
+              </fieldset>
               <div className="form-grid">
                 <label>
                   Thời gian chờ · giây

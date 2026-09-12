@@ -4,13 +4,26 @@ import type { EmbeddingProvider, LLMProvider, LLMRequest, LLMResponse } from '@n
 import { Database } from './database.js';
 import { env } from './config.js';
 import { modelMessages } from './dialogue.js';
+
+export interface BudgetReservationMetadata {
+  providerId?: string;
+  purpose?: string;
+  /** Correlates one logical model request across adaptive gateway attempts. */
+  requestId?: string;
+  /** One-based attempt number within requestId. */
+  attemptNo?: number;
+  lane?: 'simple' | 'complex';
+}
+
+export interface BudgetCompletionMetadata {
+  latencyMs?: number;
+  firstTokenMs?: number;
+  errorCode?: string;
+}
+
 export class Budget {
   constructor(private db: Database) {}
-  async reserve(
-    model: string,
-    amount: number,
-    metadata: { providerId?: string; purpose?: string } = {},
-  ) {
+  async reserve(model: string, amount: number, metadata: BudgetReservationMetadata = {}) {
     if (!Number.isFinite(amount) || amount < 0) throw new Error('Chi phí dự phòng không hợp lệ.');
     if (amount > env.maxCost) throw new Error('Câu hỏi vượt giới hạn chi phí mỗi lượt.');
     const key = 'budget:' + new Date().toISOString().slice(0, 7);
@@ -26,8 +39,18 @@ export class Budget {
       throw new Error('Đã chạm giới hạn ngân sách tháng. Vui lòng liên hệ quản trị viên.');
     const id = randomUUID();
     await this.db.query(
-      'INSERT INTO usage(id,model,reserved_usd,status,provider_id,purpose) VALUES($1,$2,$3,$4,$5,$6)',
-      [id, model, amount, 'reserved', metadata.providerId || null, metadata.purpose || null],
+      'INSERT INTO usage(id,model,reserved_usd,status,provider_id,purpose,request_id,attempt_no,lane) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [
+        id,
+        model,
+        amount,
+        'reserved',
+        metadata.providerId || null,
+        metadata.purpose || null,
+        metadata.requestId || null,
+        metadata.attemptNo ?? null,
+        metadata.lane || null,
+      ],
     );
     return { id, key, amount };
   }
@@ -37,10 +60,20 @@ export class Budget {
     output: number,
     cost: number,
     status = 'completed',
+    metadata: BudgetCompletionMetadata = {},
   ) {
     await this.db.query(
-      'UPDATE usage SET input_tokens=$2,output_tokens=$3,cost_usd=$4,reserved_usd=0,status=$5 WHERE id=$1',
-      [reservation.id, input, output, cost, status],
+      'UPDATE usage SET input_tokens=$2,output_tokens=$3,cost_usd=$4,reserved_usd=0,status=$5,latency_ms=coalesce($6,latency_ms),first_token_ms=coalesce($7,first_token_ms),error_code=coalesce($8,error_code) WHERE id=$1',
+      [
+        reservation.id,
+        input,
+        output,
+        cost,
+        status,
+        metadata.latencyMs ?? null,
+        metadata.firstTokenMs ?? null,
+        metadata.errorCode || null,
+      ],
     );
     await this.db.query(
       'UPDATE settings SET value=to_jsonb(greatest(0,(value::text)::numeric+$2::numeric)) WHERE key=$1',

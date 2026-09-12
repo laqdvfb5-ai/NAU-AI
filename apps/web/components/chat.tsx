@@ -81,6 +81,7 @@ export function Chat({ embed = false }: { embed?: boolean }) {
   useEffect(() => {
     setHydrated(true);
   }, []);
+  const sessionReady = hydrated && !loading;
   const [messages, setMessages] = useState<Message[]>([]),
     [input, setInput] = useState(''),
     [busy, setBusy] = useState(false),
@@ -368,7 +369,7 @@ export function Chat({ embed = false }: { embed?: boolean }) {
                           ? 'Trò chuyện'
                           : 'AI model'}
                     </span>
-                    {identity?.role === 'admin' && m.providerName && (
+                    {sessionReady && identity?.role === 'admin' && m.providerName && (
                       <span title={m.model}>
                         {m.providerName} · {m.model}
                       </span>
@@ -461,7 +462,7 @@ export function Chat({ embed = false }: { embed?: boolean }) {
             )}
           </div>
         )}
-        {!identity && !embed && messages.length === 0 && (
+        {sessionReady && !identity && !embed && messages.length === 0 && (
           <p className="login-nudge">
             <Link href="/login">Đăng nhập</Link> để tra cứu điểm, lịch học và học phí của riêng bạn{' '}
             <ArrowUpRight size={13} />
@@ -498,7 +499,7 @@ export function Chat({ embed = false }: { embed?: boolean }) {
               <span className="live-dot" />
               {embed
                 ? 'Tư vấn thông tin công khai'
-                : identity
+                : sessionReady && identity
                   ? 'Đã kết nối hồ sơ thử nghiệm'
                   : 'Sẵn sàng lắng nghe'}
             </span>

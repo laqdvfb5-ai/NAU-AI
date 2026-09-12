@@ -62,6 +62,11 @@ test('admin configures API, discovers model, streams test and uses it in actual 
     await dialog.getByLabel('Mẫu nhà cung cấp').selectOption('ollama');
     await dialog.getByLabel('Tên cấu hình', { exact: true }).fill(name);
     await dialog.getByLabel('Base URL', { exact: true }).fill(baseUrl);
+    const personalData = dialog.getByRole('checkbox', {
+      name: /Cho phép API này nhận căn cứ có dữ liệu sinh viên/,
+    });
+    await expect(personalData).not.toBeChecked();
+    await personalData.check();
     await dialog.getByRole('button', { name: 'Lưu cấu hình', exact: true }).click();
     await expect(dialog).not.toBeVisible();
     const created = (await (await page.request.get('/api/v1/admin/api-pool')).json()).profiles.find(
@@ -91,13 +96,13 @@ test('admin configures API, discovers model, streams test and uses it in actual 
     await page.getByRole('button', { name: 'Gửi thử API', exact: true }).click();
     await expect(page.locator('.pool-test-result')).toContainText('Nhận được phản hồi từ API');
     await expect(page.locator('.pool-reply')).toContainText('PHẢN HỒI TỪ SERVER KIỂM THỬ');
-    await expect(card).toContainText('Sẵn sàng phục vụ chat');
+    await expect(card).toContainText('Sẵn sàng');
     await page.getByRole('switch', { name: 'Bật pool phục vụ chat' }).check();
-    await page.getByLabel('Cách chọn API', { exact: true }).selectOption('manual');
+    await page.getByLabel('Cách giao yêu cầu thực tế', { exact: true }).selectOption('manual');
     await page.getByLabel('Câu hỏi thông thường', { exact: true }).selectOption(id);
     await page.getByLabel('Câu hỏi tổng hợp', { exact: true }).selectOption(id);
-    await page.getByRole('button', { name: 'Lưu lựa chọn cho chat', exact: true }).click();
-    await expect(card).toContainText('Đang phục vụ chat');
+    await page.getByRole('button', { name: 'Lưu cấu hình gateway', exact: true }).click();
+    await expect(card).toContainText('Được chọn cho chat');
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
       path: 'reports/screenshots/api-pool-desktop.png',
@@ -151,6 +156,7 @@ test('admin configures API, discovers model, streams test and uses it in actual 
         ['post', '/profiles/' + id + '/models', {}],
         ['post', '/profiles/' + id + '/test', { question: 'test' }],
         ['post', '/routing', {}],
+        ['post', '/configuration', {}],
       ] as const) {
         const r = await req.fetch('/api/v1/admin/api-pool' + url, { method, data });
         expect(r.status()).toBe(401);

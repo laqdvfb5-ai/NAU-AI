@@ -28,6 +28,21 @@ test('login headline has stable markup after hydration', async ({ page }) => {
   expect(await response!.text()).not.toContain('người đồng hành.&#x20;');
   expect(errors).toEqual([]);
 });
+test('chat session controls have stable markup after hydration', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+
+  await page.goto('/');
+  await expect(page.locator('.login-nudge')).toBeVisible();
+
+  await login(page);
+  await page.goto('/');
+  await expect(page.locator('.composer-bottom')).toContainText('Đã kết nối hồ sơ thử nghiệm');
+  expect(errors.filter((message) => /hydration|didn't match/i.test(message))).toEqual([]);
+});
 test('custom demo password is requested instead of replaced by a frontend preset', async ({
   page,
 }) => {

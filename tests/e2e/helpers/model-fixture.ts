@@ -125,6 +125,8 @@ export const test = base.extend<{ model: ModelFixture }, { modelPool: ModelPool 
               tokenParameter: 'max_tokens',
               includeUsage: true,
               sendStore: false,
+              allowPersonalData: true,
+              trustGroup: 'local-e2e-fixture',
             },
           }),
         );

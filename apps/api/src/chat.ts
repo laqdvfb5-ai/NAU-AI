@@ -406,6 +406,8 @@ export class ChatService {
     let response;
     try {
       response = await this.llm.generate({
+        requestId: result.id,
+        sensitivity: kind === 'personal' ? 'personal' : 'public',
         question,
         evidence,
         history: boundedHistory(turns),

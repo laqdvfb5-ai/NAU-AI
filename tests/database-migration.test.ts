@@ -68,3 +68,57 @@ test('API profile readiness migration recovers only tests for the current config
     await db.close();
   }
 });
+
+test('legacy API profile privacy defaults migrate once without overriding explicit values', async () => {
+  const db = new Database({ memory: true });
+  const legacyId = randomUUID();
+  const explicitId = randomUUID();
+  const postMigrationId = randomUUID();
+
+  try {
+    await db.initialize();
+    await db.query(
+      `INSERT INTO api_profiles(id,config,revision)
+       VALUES
+         ($1,$3,1),
+         ($2,$4,1)`,
+      [
+        legacyId,
+        explicitId,
+        JSON.stringify({ name: 'legacy' }),
+        JSON.stringify({
+          name: 'explicit',
+          allowPersonalData: false,
+          trustGroup: 'shared-private-boundary',
+        }),
+      ],
+    );
+    await db.query("DELETE FROM settings WHERE key='migration_api_profile_privacy_defaults_v1'");
+
+    await db.initialize();
+
+    const profiles = await db.query<{ id: string; config: Record<string, unknown> }>(
+      'SELECT id,config FROM api_profiles WHERE id=ANY($1::text[]) ORDER BY id',
+      [[legacyId, explicitId]],
+    );
+    const configs = new Map(profiles.map((profile) => [profile.id, profile.config]));
+    assert.equal(configs.get(legacyId)?.allowPersonalData, true);
+    assert.equal(configs.get(legacyId)?.trustGroup, `profile-${legacyId}`);
+    assert.equal(configs.get(explicitId)?.allowPersonalData, false);
+    assert.equal(configs.get(explicitId)?.trustGroup, 'shared-private-boundary');
+
+    await db.query('INSERT INTO api_profiles(id,config,revision) VALUES($1,$2,1)', [
+      postMigrationId,
+      JSON.stringify({ name: 'new-profile' }),
+    ]);
+    await db.initialize();
+    const [postMigration] = await db.query<{ config: Record<string, unknown> }>(
+      'SELECT config FROM api_profiles WHERE id=$1',
+      [postMigrationId],
+    );
+    assert.equal('allowPersonalData' in postMigration.config, false);
+    assert.equal('trustGroup' in postMigration.config, false);
+  } finally {
+    await db.close();
+  }
+});

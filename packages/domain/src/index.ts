@@ -139,6 +139,10 @@ export interface AcademicEvaluator {
   evaluate(student: Student, record: CourseRecord, rules: RulePack[]): AcademicResult;
 }
 export interface LLMRequest {
+  /** Correlates attempts without storing prompt or evidence. */
+  requestId?: string;
+  /** Declares whether evidence contains student-specific data. */
+  sensitivity?: 'public' | 'personal';
   question: string;
   evidence: string;
   history?: { role: 'user' | 'assistant'; content: string }[];

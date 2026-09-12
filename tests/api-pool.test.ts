@@ -520,7 +520,7 @@ test('local-only mode blocks external profiles and automatic pool cannot mix net
   );
 });
 
-test('whole-stream timeout and concurrency cap release slots even after upstream headers', async () => {
+test('whole-stream timeout and concurrency cap release slots without training the chat circuit', async () => {
   const p = await pool.save(config({ timeoutMs: 1000, maxConcurrent: 1 }), 'admin-test');
   behavior = 'hang';
   try {
@@ -548,7 +548,7 @@ test('whole-stream timeout and concurrency cap release slots even after upstream
       const timeout = await pool.test(p.id, request.question, 'admin-test');
       assert.equal(timeout.errorCode, 'TIMEOUT');
     }
-    assert.ok((await pool.list()).find((v) => v.id === p.id)?.cooldownUntil);
+    assert.equal((await pool.list()).find((v) => v.id === p.id)?.cooldownUntil, null);
   } finally {
     behavior = 'ok';
   }

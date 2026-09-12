@@ -103,6 +103,119 @@ test('atomic budget reservations do not oversubscribe under concurrency', async 
     env.budget = original;
   }
 });
+test('budget records adaptive request and attempt telemetry without request content', async () => {
+  const budget = new Budget(db);
+  const requestId = randomUUID();
+  const reservation = await budget.reserve('gateway-telemetry-test', 0, {
+    providerId: 'provider-a',
+    purpose: 'chat',
+    requestId,
+    attemptNo: 2,
+    lane: 'complex',
+  });
+  await budget.finish(reservation, 123, 17, 0, 'completed', {
+    latencyMs: 840,
+    firstTokenMs: 190,
+  });
+  const [usage] = await db.query(
+    'SELECT provider_id,purpose,request_id,attempt_no,lane,latency_ms,first_token_ms,error_code,input_tokens,output_tokens,status FROM usage WHERE id=$1',
+    [reservation.id],
+  );
+  assert.deepEqual(usage, {
+    provider_id: 'provider-a',
+    purpose: 'chat',
+    request_id: requestId,
+    attempt_no: 2,
+    lane: 'complex',
+    latency_ms: 840,
+    first_token_ms: 190,
+    error_code: null,
+    input_tokens: 123,
+    output_tokens: 17,
+    status: 'completed',
+  });
+});
+test('provider gateway lease rejects a stale profile revision', async () => {
+  const providerId = `lease-revision-${randomUUID()}`;
+  await db.query('INSERT INTO api_profiles(id,config,revision) VALUES($1,$2,1)', [
+    providerId,
+    JSON.stringify({}),
+  ]);
+  try {
+    const currentLease = await db.acquireProviderGatewayLease({
+      providerId,
+      revision: 1,
+      maxConcurrent: 1,
+      requestId: randomUUID(),
+      ttlMs: 10_000,
+    });
+    assert.equal(currentLease?.revision, 1);
+    assert.equal(await db.releaseProviderGatewayLease(currentLease!), true);
+
+    await db.query('UPDATE api_profiles SET revision=2 WHERE id=$1', [providerId]);
+
+    const staleLease = await db.acquireProviderGatewayLease({
+      providerId,
+      revision: 1,
+      maxConcurrent: 1,
+      requestId: randomUUID(),
+      ttlMs: 10_000,
+    });
+    assert.equal(staleLease, null);
+
+    const freshLease = await db.acquireProviderGatewayLease({
+      providerId,
+      revision: 2,
+      maxConcurrent: 1,
+      requestId: randomUUID(),
+      ttlMs: 10_000,
+    });
+    assert.equal(freshLease?.revision, 2);
+    assert.equal(await db.releaseProviderGatewayLease(freshLease!), true);
+
+    await db.query(
+      "INSERT INTO provider_gateway_state(provider_id,revision,circuit_state,circuit_open_until) VALUES($1,2,'open',now()+interval '1 minute')",
+      [providerId],
+    );
+    const openCircuitLease = await db.acquireProviderGatewayLease({
+      providerId,
+      revision: 2,
+      maxConcurrent: 1,
+      requestId: randomUUID(),
+      ttlMs: 10_000,
+    });
+    assert.equal(openCircuitLease, null);
+
+    await db.query(
+      'UPDATE provider_gateway_state SET circuit_open_until=NULL WHERE provider_id=$1 AND revision=2',
+      [providerId],
+    );
+    const indefiniteOpenCircuitLease = await db.acquireProviderGatewayLease({
+      providerId,
+      revision: 2,
+      maxConcurrent: 1,
+      requestId: randomUUID(),
+      ttlMs: 10_000,
+    });
+    assert.equal(indefiniteOpenCircuitLease, null);
+
+    await db.query(
+      "UPDATE provider_gateway_state SET circuit_open_until=now()-interval '1 second' WHERE provider_id=$1 AND revision=2",
+      [providerId],
+    );
+    const expiredCircuitLease = await db.acquireProviderGatewayLease({
+      providerId,
+      revision: 2,
+      maxConcurrent: 1,
+      requestId: randomUUID(),
+      ttlMs: 10_000,
+    });
+    assert.equal(expiredCircuitLease?.revision, 2);
+    assert.equal(await db.releaseProviderGatewayLease(expiredCircuitLease!), true);
+  } finally {
+    await db.query('DELETE FROM api_profiles WHERE id=$1', [providerId]);
+  }
+});
 test('retrieval filters by applicability and review status before returning evidence', async () => {
   const kb = new KnowledgeService(db);
   assert.ok(

@@ -64,6 +64,7 @@ const auth = new AuthService(db, students),
   );
 await actions.init();
 await apiPool.refresh();
+apiPool.startHealthMonitor();
 @Catch()
 class Errors implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
@@ -242,6 +243,7 @@ class ApiController {
       'INSERT INTO feedback(id,conversation_id,message_id,rating,note) VALUES($1,$2,$3,$4,$5) ON CONFLICT(conversation_id,message_id) DO UPDATE SET rating=excluded.rating,note=excluded.note',
       [randomUUID(), b.conversationId, b.messageId, b.rating, b.note],
     );
+    await apiPool.recordFeedback(b.messageId);
     return { ok: true };
   }
   @Get('sources') async sources() {
@@ -498,6 +500,7 @@ console.log(
   `NAU AI API: http://localhost:${env.port}/api/v1/health (${env.synthetic ? 'synthetic' : 'real'}, ${env.llm})`,
 );
 const shutdown = async () => {
+  apiPool.stopHealthMonitor();
   await ingestion.stop();
   await app.close();
   await db.close();

@@ -14,6 +14,27 @@ import {
 import { env, dataDir } from './config.js';
 import { initialSources, initialRules } from './sources.js';
 
+export interface ProviderGatewayLease {
+  providerId: string;
+  revision: number;
+  slot: number;
+  requestId: string;
+  expiresAt: string;
+}
+
+export interface AcquireProviderGatewayLeaseInput {
+  providerId: string;
+  revision: number;
+  maxConcurrent: number;
+  requestId: string;
+  ttlMs: number;
+}
+
+export type DatabaseQuery = <T = Record<string, any>>(
+  sql: string,
+  params?: unknown[],
+) => Promise<T[]>;
+
 export class Database implements StudentDataProvider {
   private engine: PGlite | pg.Pool;
   constructor(options: { memory?: boolean } = {}) {
@@ -29,6 +50,31 @@ export class Database implements StudentDataProvider {
         ? await this.engine.query(sql, params)
         : await this.engine.query(sql, params);
     return result.rows as T[];
+  }
+  async transaction<T>(callback: (query: DatabaseQuery) => Promise<T>): Promise<T> {
+    if (this.engine instanceof pg.Pool) {
+      const client = await this.engine.connect();
+      try {
+        await client.query('BEGIN');
+        const value = await callback(
+          async <R = Record<string, any>>(sql: string, params: unknown[] = []) =>
+            (await client.query(sql, params)).rows as R[],
+        );
+        await client.query('COMMIT');
+        return value;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+    return this.engine.transaction((tx) =>
+      callback(
+        async <R = Record<string, any>>(sql: string, params: unknown[] = []) =>
+          (await tx.query<R>(sql, params)).rows as R[],
+      ),
+    );
   }
   async close() {
     if (this.engine instanceof pg.Pool) await this.engine.end();
@@ -55,11 +101,28 @@ export class Database implements StudentDataProvider {
       'ALTER TABLE usage ADD COLUMN IF NOT EXISTS provider_id text',
       'ALTER TABLE usage ADD COLUMN IF NOT EXISTS purpose text',
       'ALTER TABLE usage ADD COLUMN IF NOT EXISTS latency_ms integer',
+      'ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id text',
+      'ALTER TABLE usage ADD COLUMN IF NOT EXISTS attempt_no integer',
+      'ALTER TABLE usage ADD COLUMN IF NOT EXISTS lane text',
+      'ALTER TABLE usage ADD COLUMN IF NOT EXISTS first_token_ms integer',
+      'ALTER TABLE usage ADD COLUMN IF NOT EXISTS error_code text',
       'CREATE INDEX IF NOT EXISTS usage_provider_purpose_created_idx ON usage(provider_id,purpose,created_at)',
+      'CREATE INDEX IF NOT EXISTS usage_request_attempt_idx ON usage(request_id,attempt_no)',
       'CREATE TABLE IF NOT EXISTS api_profiles(id text PRIMARY KEY, config jsonb NOT NULL, encrypted_key text, revision integer NOT NULL DEFAULT 1, last_test jsonb, last_success_revision integer, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())',
       'ALTER TABLE api_profiles ADD COLUMN IF NOT EXISTS last_success_revision integer',
       "UPDATE api_profiles SET last_success_revision=revision WHERE last_success_revision IS NULL AND NOT EXISTS (SELECT 1 FROM settings WHERE key='migration_api_profile_last_success_revision_v1') AND ((last_test->>'ok'='true' AND last_test->>'kind'='completion' AND last_test->>'revision'=revision::text) OR EXISTS (SELECT 1 FROM usage WHERE usage.provider_id=api_profiles.id AND usage.purpose='test' AND usage.status IN ('completed','usage_unknown') AND usage.created_at>=api_profiles.updated_at))",
       "INSERT INTO settings(key,value) VALUES('migration_api_profile_last_success_revision_v1','true'::jsonb) ON CONFLICT DO NOTHING",
+      "UPDATE api_profiles SET config=jsonb_set(config,'{allowPersonalData}','true'::jsonb,true) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key='migration_api_profile_privacy_defaults_v1') AND jsonb_typeof(config->'allowPersonalData') IS DISTINCT FROM 'boolean'",
+      "UPDATE api_profiles SET config=jsonb_set(config,'{trustGroup}',to_jsonb('profile-' || id),true) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key='migration_api_profile_privacy_defaults_v1') AND (jsonb_typeof(config->'trustGroup') IS DISTINCT FROM 'string' OR btrim(config->>'trustGroup')='')",
+      "INSERT INTO settings(key,value) VALUES('migration_api_profile_privacy_defaults_v1','true'::jsonb) ON CONFLICT DO NOTHING",
+      "CREATE TABLE IF NOT EXISTS provider_gateway_state(provider_id text NOT NULL REFERENCES api_profiles(id) ON DELETE CASCADE, revision integer NOT NULL, success_count bigint NOT NULL DEFAULT 0, failure_count bigint NOT NULL DEFAULT 0, consecutive_failures integer NOT NULL DEFAULT 0, success_ewma double precision NOT NULL DEFAULT 1, latency_ewma_ms double precision, first_token_ewma_ms double precision, cost_ewma_usd double precision, quality_ewma double precision, circuit_state text NOT NULL DEFAULT 'closed', circuit_open_until timestamptz, next_probe_at timestamptz NOT NULL DEFAULT now(), probe_claim_until timestamptz, probe_claim_token text, last_error_code text, last_attempt_at timestamptz, last_success_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(provider_id,revision))",
+      'CREATE INDEX IF NOT EXISTS provider_gateway_state_circuit_idx ON provider_gateway_state(circuit_state,circuit_open_until)',
+      'CREATE TABLE IF NOT EXISTS provider_gateway_leases(provider_id text NOT NULL REFERENCES api_profiles(id) ON DELETE CASCADE, revision integer NOT NULL, slot integer NOT NULL, request_id text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(provider_id,revision,slot))',
+      'CREATE INDEX IF NOT EXISTS provider_gateway_leases_expires_idx ON provider_gateway_leases(expires_at)',
+      "CREATE TABLE IF NOT EXISTS gateway_attempts(id text PRIMARY KEY, request_id text NOT NULL, attempt_no integer NOT NULL, lane text NOT NULL, purpose text NOT NULL DEFAULT 'chat', provider_id text NOT NULL, provider_revision integer NOT NULL, model text NOT NULL, status text NOT NULL DEFAULT 'started', error_code text, retryable boolean, committed boolean NOT NULL DEFAULT false, sensitivity text, selection_score double precision, selection_reason jsonb NOT NULL DEFAULT '{}'::jsonb, latency_ms integer, first_token_ms integer, input_tokens integer NOT NULL DEFAULT 0, output_tokens integer NOT NULL DEFAULT 0, cost_usd numeric NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz, UNIQUE(request_id,attempt_no))",
+      'CREATE INDEX IF NOT EXISTS gateway_attempts_request_idx ON gateway_attempts(request_id,attempt_no)',
+      'CREATE INDEX IF NOT EXISTS gateway_attempts_provider_created_idx ON gateway_attempts(provider_id,provider_revision,created_at)',
+      'CREATE INDEX IF NOT EXISTS gateway_attempts_created_idx ON gateway_attempts(created_at)',
       'CREATE TABLE IF NOT EXISTS budget_lock(id integer PRIMARY KEY)',
       'INSERT INTO budget_lock(id) VALUES(1) ON CONFLICT DO NOTHING',
       'CREATE TABLE IF NOT EXISTS feedback(id text PRIMARY KEY, conversation_id text NOT NULL, message_id text NOT NULL, rating integer NOT NULL, note text NOT NULL, created_at timestamptz DEFAULT now(), UNIQUE(conversation_id,message_id))',
@@ -156,6 +219,71 @@ export class Database implements StudentDataProvider {
       JSON.stringify(metadata),
     ]);
   }
+  async acquireProviderGatewayLease({
+    providerId,
+    revision,
+    maxConcurrent,
+    requestId,
+    ttlMs,
+  }: AcquireProviderGatewayLeaseInput): Promise<ProviderGatewayLease | null> {
+    if (!Number.isInteger(revision) || revision < 1) throw new Error('Invalid provider revision');
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 1000)
+      throw new Error('Invalid provider concurrency');
+    if (!requestId) throw new Error('Invalid gateway request id');
+    if (!Number.isFinite(ttlMs) || ttlMs < 1 || ttlMs > 3_600_000)
+      throw new Error('Invalid provider lease TTL');
+    for (let slot = 1; slot <= maxConcurrent; slot++) {
+      const [lease] = await this.query<{
+        provider_id: string;
+        revision: number;
+        slot: number;
+        request_id: string;
+        expires_at: Date | string;
+      }>(
+        `INSERT INTO provider_gateway_leases(provider_id,revision,slot,request_id,expires_at)
+         SELECT profile.id,profile.revision,$3,$4,now()+($5 * interval '1 millisecond')
+         FROM (
+           SELECT id,revision FROM api_profiles
+           WHERE id=$1 AND revision=$2
+           FOR KEY SHARE
+         ) profile
+         LEFT JOIN provider_gateway_state state
+           ON state.provider_id=profile.id AND state.revision=profile.revision
+         WHERE state.provider_id IS NULL OR state.circuit_state<>'open'
+           OR (state.circuit_open_until IS NOT NULL AND state.circuit_open_until<=now())
+         ON CONFLICT(provider_id,revision,slot) DO UPDATE
+         SET request_id=excluded.request_id,expires_at=excluded.expires_at,created_at=now()
+         WHERE provider_gateway_leases.expires_at<=now()
+         RETURNING provider_id,revision,slot,request_id,expires_at`,
+        [providerId, revision, slot, requestId, Math.ceil(ttlMs)],
+      );
+      if (lease)
+        return {
+          providerId: lease.provider_id,
+          revision: Number(lease.revision),
+          slot: Number(lease.slot),
+          requestId: lease.request_id,
+          expiresAt: new Date(lease.expires_at).toISOString(),
+        };
+    }
+    return null;
+  }
+  async renewProviderGatewayLease(lease: ProviderGatewayLease, ttlMs: number) {
+    if (!Number.isFinite(ttlMs) || ttlMs < 1 || ttlMs > 3_600_000)
+      throw new Error('Invalid provider lease TTL');
+    const rows = await this.query(
+      "UPDATE provider_gateway_leases SET expires_at=now()+($5 * interval '1 millisecond') WHERE provider_id=$1 AND revision=$2 AND slot=$3 AND request_id=$4 AND expires_at>now() RETURNING provider_id",
+      [lease.providerId, lease.revision, lease.slot, lease.requestId, Math.ceil(ttlMs)],
+    );
+    return rows.length > 0;
+  }
+  async releaseProviderGatewayLease(lease: ProviderGatewayLease) {
+    const rows = await this.query(
+      'DELETE FROM provider_gateway_leases WHERE provider_id=$1 AND revision=$2 AND slot=$3 AND request_id=$4 RETURNING provider_id',
+      [lease.providerId, lease.revision, lease.slot, lease.requestId],
+    );
+    return rows.length > 0;
+  }
   async cleanup() {
     await this.query(
       "DELETE FROM conversations WHERE updated_at < now() - ($1 * interval '1 day')",
@@ -163,6 +291,14 @@ export class Database implements StudentDataProvider {
     );
     await this.query('DELETE FROM sessions WHERE expires_at < now()');
     await this.query('DELETE FROM oidc_states WHERE expires_at < now()');
+    await this.query('DELETE FROM provider_gateway_leases WHERE expires_at <= now()');
+    await this.query(
+      "DELETE FROM gateway_attempts WHERE created_at < now() - ($1 * interval '1 day')",
+      [env.retention * 3],
+    );
+    await this.query(
+      "DELETE FROM provider_gateway_state state WHERE NOT EXISTS (SELECT 1 FROM api_profiles profile WHERE profile.id=state.provider_id AND profile.revision=state.revision) AND state.updated_at < now() - interval '7 days'",
+    );
     await this.query("DELETE FROM audit WHERE created_at < now() - ($1 * interval '1 day')", [
       env.retention * 3,
     ]);
