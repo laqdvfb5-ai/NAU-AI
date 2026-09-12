@@ -1733,9 +1733,11 @@ tbody tr:last-child td {
   display: block;
 }
 .login-art h1 em {
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: Inter, 'Segoe UI', Arial, sans-serif;
+  font-style: normal;
   color: #789860;
-  font-weight: 400;
+  font-weight: 300;
+  letter-spacing: -1.5px;
 }
 .login-art p {
   font-size: 12px;
