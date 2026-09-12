@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import '@fontsource-variable/lora/wght-italic.css';
 import './globals.css';
 import { AppProvider } from '../components/app-provider';
 export const metadata: Metadata = {
