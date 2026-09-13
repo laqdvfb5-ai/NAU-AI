@@ -24,7 +24,7 @@ Trang `/faq` tìm kiếm có dấu/không dấu và theo chủ đề. Liên kế
 4. Tách dữ liệu cá nhân khỏi kho công khai. Không nhập danh sách điểm, số điện thoại cá nhân, hồ sơ trợ cấp, mật khẩu hoặc mã OTP. Việc một tài liệu nằm trên website công khai không làm mất yêu cầu bảo vệ dữ liệu cá nhân.
 5. Khi có thông báo mới, đánh giá ảnh hưởng đến các câu hỏi cùng chủ đề, cập nhật nguồn/phiên bản và chạy lại các ca đánh giá liên quan. Với dịch vụ chưa xác nhận có tồn tại, câu trả lời phải thể hiện rõ việc chưa đủ thông tin.
 
-Sau khi đưa nguồn seed lên máy chủ, cần tải bản gốc và duyệt phần trích dẫn đã đối chiếu để lưu dấu vân tay của bản tải. Seed chỉ chứa đoạn tóm tắt đã đọc, chưa có dấu vân tay của HTML trên máy chủ. Lần tải đầu tiên chuyển nguồn sang chờ duyệt; những lần sau, bản tải có thay đổi cũng cần duyệt lại trước khi dùng. Không bật lại hàng loạt nguồn chờ duyệt bằng SQL hoặc đưa toàn bộ HTML vào câu trả lời. Dùng luồng duyệt nguồn để giữ phiên bản cũ, ghi nhật ký và lập chỉ mục đúng đoạn đã kiểm tra.
+Sau khi đưa nguồn seed lên máy chủ, cần tải bản gốc và duyệt phần trích dẫn đã đối chiếu để lưu dấu vân tay nội dung và liên kết. Seed chỉ chứa đoạn tóm tắt đã đọc, chưa có dấu vân tay của trang trên máy chủ. Lần tải đầu tiên chuyển nguồn sang chờ duyệt; những lần sau, nội dung hoặc liên kết có thay đổi cũng cần duyệt lại trước khi dùng. Không bật lại hàng loạt nguồn chờ duyệt bằng SQL hoặc đưa toàn bộ HTML vào câu trả lời. Dùng luồng duyệt nguồn để giữ phiên bản cũ, ghi nhật ký và lập chỉ mục đúng đoạn đã kiểm tra.
 
 ## Sinh câu trả lời và đánh giá
 

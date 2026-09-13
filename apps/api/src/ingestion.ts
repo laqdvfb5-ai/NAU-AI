@@ -63,11 +63,16 @@ export function detectsPrivateData(text: string) {
     ) || /\b\d{12}\b/.test(n)
   );
 }
-export function extractOfficialHtml(html: string) {
+function sanitizedHtml(html: string) {
   const $ = cheerio.load(html);
   // ASP.NET pages can wrap their entire public article in a server-side form.
   // Keep those wrappers, but discard controls and their submitted/default values.
-  $('script,style,noscript,nav,footer,header,iframe,input,textarea,select,button,output').remove();
+  $('script,style,noscript,template,iframe,input,textarea,select,button,output,[hidden]').remove();
+  return $;
+}
+export function extractOfficialHtml(html: string) {
+  const $ = sanitizedHtml(html);
+  $('nav,footer,header').remove();
   for (const selector of ['main', 'article', 'body']) {
     const text = $(selector)
       .text()
@@ -77,6 +82,50 @@ export function extractOfficialHtml(html: string) {
     if (text) return text;
   }
   return '';
+}
+function isPdfDocument(buffer: Buffer, contentType: string) {
+  return contentType.toLowerCase().includes('pdf') || buffer.subarray(0, 4).toString() === '%PDF';
+}
+export function officialContentHash(buffer: Buffer, contentType: string) {
+  if (isPdfDocument(buffer, contentType) || !contentType.toLowerCase().includes('html'))
+    return createHash('sha256').update(buffer).digest('hex');
+
+  const $ = sanitizedHtml(buffer.toString('utf8'));
+  const compactText = (text: string) => text.replace(/\s+/g, ' ').trim();
+  // NAU increments these standalone display counters on each page view.
+  // Match only that UI label; dates, fees and other numeric evidence remain hashed.
+  $('span')
+    .filter((_, element) => {
+      const span = $(element);
+      return (
+        span.children().length === 0 &&
+        /^\d[\d.,\s]*(?:lượt|người)\s+xem$/i.test(compactText(span.text()))
+      );
+    })
+    .remove();
+  // Use the whole public page, including navigation cited by directory sources.
+  // Link targets are evidence too: an unchanged label may lead to a different document.
+  const links = $('body a[href],body area[href]')
+    .toArray()
+    .flatMap((element) => {
+      const link = $(element);
+      const href = link.attr('href')!.trim();
+      if (/^(javascript|data|vbscript):/i.test(href)) return [];
+      return [
+        { href, title: compactText(link.attr('title') || ''), text: compactText(link.text()) },
+      ];
+    });
+  // Preserve text boundaries between block elements without hashing layout whitespace.
+  $('br').replaceWith('\n');
+  $('p,div,section,article,main,nav,header,footer,li,td,th,h1,h2,h3,h4,h5,h6').append('\n');
+  const evidence = {
+    title: compactText($('title').text()),
+    base: $('base[href]').attr('href')?.trim() || '',
+    text: compactText($('body').text()),
+    links,
+  };
+  // The tag forces legacy byte hashes through the existing manual review path once.
+  return 'html-v1:' + createHash('sha256').update(JSON.stringify(evidence)).digest('hex');
 }
 export async function downloadOfficial(
   value: string,
@@ -329,7 +378,7 @@ export class IngestionService {
       const source = row.data;
       try {
         const file = await this.download(source.url);
-        const hash = createHash('sha256').update(file.buffer).digest('hex');
+        const hash = officialContentHash(file.buffer, file.contentType);
         source.lastCheckedAt = new Date().toISOString();
         const hasStoredText =
           source.pendingText === undefined
@@ -340,17 +389,16 @@ export class IngestionService {
           await this.save(source);
           return;
         }
-        const extracted =
-          file.contentType.includes('pdf') || file.buffer.subarray(0, 4).toString() === '%PDF'
-            ? await extractPdf(file.buffer)
-            : (() => {
-                if (!file.contentType.includes('html'))
-                  throw new Error('Định dạng chưa hỗ trợ; cần HTML hoặc PDF.');
-                return {
-                  text: extractOfficialHtml(file.buffer.toString('utf8')),
-                  ocr: false,
-                };
-              })();
+        const extracted = isPdfDocument(file.buffer, file.contentType)
+          ? await extractPdf(file.buffer)
+          : (() => {
+              if (!file.contentType.includes('html'))
+                throw new Error('Định dạng chưa hỗ trợ; cần HTML hoặc PDF.');
+              return {
+                text: extractOfficialHtml(file.buffer.toString('utf8')),
+                ocr: false,
+              };
+            })();
         if (!extracted.text.trim())
           throw new Error('Không trích xuất được nội dung tài liệu; cần kiểm tra nguồn.');
         source.contentHash = hash;
