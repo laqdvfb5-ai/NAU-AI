@@ -63,6 +63,21 @@ export function detectsPrivateData(text: string) {
     ) || /\b\d{12}\b/.test(n)
   );
 }
+export function extractOfficialHtml(html: string) {
+  const $ = cheerio.load(html);
+  // ASP.NET pages can wrap their entire public article in a server-side form.
+  // Keep those wrappers, but discard controls and their submitted/default values.
+  $('script,style,noscript,nav,footer,header,iframe,input,textarea,select,button,output').remove();
+  for (const selector of ['main', 'article', 'body']) {
+    const text = $(selector)
+      .text()
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n/g, '\n\n')
+      .trim();
+    if (text) return text;
+  }
+  return '';
+}
 export async function downloadOfficial(
   value: string,
   redirects = 0,
@@ -191,7 +206,10 @@ export class IngestionService {
   private worker?: Worker;
   private timer?: ReturnType<typeof setInterval>;
   private running = new Set<string>();
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private download: typeof downloadOfficial = downloadOfficial,
+  ) {}
   async start() {
     if (env.redisUrl) {
       const u = new URL(env.redisUrl);
@@ -241,7 +259,7 @@ export class IngestionService {
     return { queued: true, mode: 'local-worker' };
   }
   async discover(startUrl = 'https://nau.edu.vn/', limit = 40) {
-    const file = await downloadOfficial(startUrl);
+    const file = await this.download(startUrl);
     if (!file.contentType.includes('html')) throw new Error('Chỉ khám phá liên kết từ trang HTML.');
     const $ = cheerio.load(file.buffer.toString('utf8'));
     const known = new Set(
@@ -310,10 +328,14 @@ export class IngestionService {
       if (!row) return;
       const source = row.data;
       try {
-        const file = await downloadOfficial(source.url);
+        const file = await this.download(source.url);
         const hash = createHash('sha256').update(file.buffer).digest('hex');
         source.lastCheckedAt = new Date().toISOString();
-        if (source.contentHash === hash) {
+        const hasStoredText =
+          source.pendingText === undefined
+            ? source.reviewed && Boolean(source.excerpt.trim())
+            : Boolean(source.pendingText.trim());
+        if (source.contentHash === hash && hasStoredText) {
           source.error = undefined;
           await this.save(source);
           return;
@@ -324,16 +346,13 @@ export class IngestionService {
             : (() => {
                 if (!file.contentType.includes('html'))
                   throw new Error('Định dạng chưa hỗ trợ; cần HTML hoặc PDF.');
-                const $ = cheerio.load(file.buffer.toString('utf8'));
-                $('script,style,noscript,nav,footer,header,form,iframe').remove();
                 return {
-                  text: ($('main').text() || $('article').text() || $('body').text())
-                    .replace(/[ \t]+/g, ' ')
-                    .replace(/\n\s*\n/g, '\n\n')
-                    .trim(),
+                  text: extractOfficialHtml(file.buffer.toString('utf8')),
                   ocr: false,
                 };
               })();
+        if (!extracted.text.trim())
+          throw new Error('Không trích xuất được nội dung tài liệu; cần kiểm tra nguồn.');
         source.contentHash = hash;
         source.pendingText = extracted.text.slice(0, 350000);
         source.status = detectsPrivateData(extracted.text) ? 'excluded' : 'pending';
