@@ -47,7 +47,7 @@ test('every supported chat route returns exactly model output, including uncerta
     ['viet code html web ban hang co ban', guest, 'out_of_scope'],
     ['ok mc mc mck hyperpopstar', guest, 'conversation'],
     ['Quy chế học phần cốt lõi PI', guest, 'public'],
-    ['Thư viện mở cửa khi nào', guest, 'source_gap'],
+    ['Bãi gửi xe trường có mở ban đêm không?', guest, 'source_gap'],
     ['Điểm của tôi', sv, 'personal'],
     ['Điểm của tôi', studentSession('MOCK00031'), 'personal'],
     ['Điểm của tôi', studentSession('MOCK00001'), 'personal'],
@@ -538,7 +538,7 @@ test('code from a noncompliant model is neither streamed nor stored on guarded r
   for (const question of [
     'viet code html web ban hang co ban',
     'ok mc mc mck hyperpopstar',
-    'Thư viện mở cửa khi nào',
+    'Bãi gửi xe trường có mở ban đêm không?',
   ]) {
     await assert.rejects(
       service.answer(question, session, undefined, false, undefined, (delta) => deltas.push(delta)),

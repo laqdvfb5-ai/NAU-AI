@@ -6,6 +6,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import {
   MessageSquare,
   BookOpen,
+  MessageCircleQuestion,
   LayoutDashboard,
   ShieldCheck,
   Server,
@@ -63,6 +64,7 @@ export function Shell({
   useEffect(() => setOpen(false), [path]);
   const links = [
     { href: '/', label: 'Trò chuyện', icon: MessageSquare },
+    { href: '/faq', label: 'Câu hỏi thường gặp', icon: MessageCircleQuestion },
     { href: '/student', label: 'Hồ sơ học tập', icon: LayoutDashboard },
     { href: '/knowledge', label: 'Kho kiến thức', icon: BookOpen },
     ...(identity?.role === 'admin'

@@ -19,6 +19,7 @@
     "test:e2e": "playwright test",
     "seed": "npm run build -w @nau/domain && tsx scripts/seed.ts",
     "evaluate": "npm run build -w @nau/domain && tsx scripts/evaluate.ts",
+    "evaluate:faq": "npm run build -w @nau/domain && tsx scripts/evaluate-faq.ts",
     "load": "tsx scripts/load.ts"
   },
   "devDependencies": {

@@ -20,7 +20,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import type { AcademicResult, Citation } from '@nau/domain';
+import { STUDENT_FAQ_QUESTIONS, type AcademicResult, type Citation } from '@nau/domain';
 import { useApp } from './app-provider';
 import { Sources, Evaluation } from './evidence';
 import { ChatProgress, isProgressStage, type ProgressStep } from './chat-progress';
@@ -57,9 +57,9 @@ const suggestions = [
   },
   {
     icon: BookOpen,
-    title: 'Tìm đúng quy chế',
-    description: 'Điều kiện dự thi và xét đạt học phần',
-    question: 'Điều kiện dự thi theo quy chế đào tạo năm 2025 là gì?',
+    title: 'Giấy tờ & thủ tục',
+    description: 'Giấy xác nhận, bảo lưu, chuyển ngành',
+    question: 'Em muốn xin giấy xác nhận sinh viên thì tìm mẫu ở đâu?',
   },
   {
     icon: Wallet,
@@ -69,9 +69,9 @@ const suggestions = [
   },
   {
     icon: CalendarDays,
-    title: 'Lịch học của bạn',
-    description: 'Sắp xếp một học kỳ chủ động hơn',
-    question: 'Cho tôi xem lịch học của tôi',
+    title: 'Cuộc sống sinh viên',
+    description: 'Ký túc xá, thư viện và những hỗ trợ',
+    question: 'Em muốn đăng ký ký túc xá thì tìm biểu mẫu ở đâu?',
   },
 ];
 export function Chat({ embed = false }: { embed?: boolean }) {
@@ -99,7 +99,9 @@ export function Chat({ embed = false }: { embed?: boolean }) {
     controller = useRef<AbortController | null>(null),
     requestVersion = useRef(0);
   const conversationParam = params.get('conversation'),
-    initialQuestion = params.get('q');
+    initialQuestion = params.has('faq')
+      ? STUDENT_FAQ_QUESTIONS.find((entry) => entry.id === params.get('faq'))?.question
+      : params.get('q');
   const invalidateRequest = useCallback(() => {
     requestVersion.current += 1;
     controller.current?.abort();
@@ -325,6 +327,11 @@ export function Chat({ embed = false }: { embed?: boolean }) {
               </button>
             ))}
           </div>
+          {!embed && (
+            <Link className="microcopy" href="/faq">
+              Khám phá 12 chủ đề câu hỏi thường gặp <ArrowUpRight size={13} />
+            </Link>
+          )}
           <div className="trust-line">
             <ShieldCheck size={15} />
             <span>Câu trả lời gắn với nguồn · Dữ liệu riêng cần đăng nhập</span>

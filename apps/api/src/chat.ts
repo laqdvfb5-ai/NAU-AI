@@ -28,6 +28,9 @@ import {
   needsPiWordingCheck,
   hasMissingPiFailureClaim,
   hasValidNauIdentity,
+  catalogQuestion,
+  isPublicStudentGuidance,
+  isStudentServiceQuestion,
   type StoredTurn,
 } from './dialogue.js';
 import { ChatModelException, chatFailureLog } from './chat-errors.js';
@@ -142,7 +145,21 @@ export class ChatService {
             .map((r) => r.data)
         : [];
     const effectiveQuestion = resolveQuestion(question, turns);
-    const q = normalize(effectiveQuestion),
+    const faq = catalogQuestion(effectiveQuestion);
+    const privateTopic =
+      faq?.dataScope === 'personal'
+        ? (
+            {
+              tuition: 'hoc phi',
+              'financial-aid': 'hoc bong',
+              registration: 'lich hoc',
+              exams: 'lich thi',
+              'graduation-career': 'tot nghiep',
+              'activities-conduct': 'ren luyen',
+            } as Record<string, string>
+          )[faq.categoryId] || ''
+        : '';
+    const q = normalize(effectiveQuestion) + (privateTopic ? ` ${privateTopic} cua toi` : ''),
       student =
         session.identity?.role === 'student'
           ? await this.students.getStudent(session.identity.studentId!)
@@ -166,10 +183,11 @@ export class ChatService {
     const explicitPublic =
       /quy che|quy dinh|thong tin chung|cua truong|tuyen sinh|diem chuan|cong bo/.test(q);
     const academicTopic =
-      /\b(diem|qua mon|qua hoc phan|pi|truot|rot|hoc phi|lich hoc|lich thi|cong no|tien do|gpa|ren luyen|no mon|tai chinh|tot nghiep|ho so|dang ky|huy mon)\b/.test(
+      /\b(diem|qua mon|qua hoc phan|pi|truot|rot|hoc phi|hoc bong|mien giam|lich hoc|lich thi|cong no|tien do|gpa|ren luyen|no mon|tai chinh|tot nghiep|ho so|dang ky|huy mon)\b/.test(
         q,
       );
     const personal =
+      !isPublicStudentGuidance(effectiveQuestion) &&
       academicTopic &&
       (/(cua|cho) (toi|minh|em)|toi (no|rot|truot|khong|chua|du|qua|hoc)|minh (no|rot|truot|khong|chua|du|qua)|diem cua|lich (hoc|thi)|cong no|tien do|gpa|ren luyen|no mon|hoc phi (toi|minh|em)/.test(
         q,
@@ -177,9 +195,7 @@ export class ChatService {
         Boolean(
           student &&
           !explicitPublic &&
-          /\b(diem|qua mon|qua hoc phan|pi|truot|rot|tai chinh|tot nghiep|hoc phi)\b|6[,.]2/.test(
-            q,
-          ),
+          /\b(diem|qua mon|qua hoc phan|pi|truot|rot|tai chinh|tot nghiep)\b|6[,.]2/.test(q),
         ));
     const references = [...effectiveQuestion.matchAll(/\bMOCK\d{5}\b|\bsv\d{3,5}\b/gi)].map((m) =>
       m[0].toUpperCase(),
@@ -235,8 +251,10 @@ export class ChatService {
         ...(social === 'capabilities'
           ? {
               capabilities: [
-                'Thông tin công khai có nguồn',
-                'Giải thích học vụ',
+                'Tuyển sinh, học phí, học bổng, miễn giảm và vay vốn theo nguồn đã kiểm tra',
+                'Giấy xác nhận, bảo lưu, chuyển ngành và thủ tục học tập',
+                'Thư viện, LMS, ký túc xá, hoạt động và nơi hỗ trợ sinh viên',
+                'Thực tập, hướng nghiệp, quy chế và giải thích học vụ',
                 'Tra điểm, lịch, học phí của chính người đăng nhập',
               ],
             }
@@ -320,12 +338,16 @@ export class ChatService {
         );
         result.citations = result.evaluations.flatMap((e) => e.citations);
       }
-      if (/hoc phi|cong no|tai chinh|mien giam|hoc bong/.test(q)) {
+      if (/hoc phi|cong no|tai chinh/.test(q)) {
         const charges = student.finance.charges;
         parts.push(
           `Học phí học kỳ ${student.finance.semester} (dữ liệu giả):\n${charges.map((c) => `${c.title}: phải thu ${money(c.amount)}, đã thanh toán ${money(c.paid)}, còn nợ ${money(c.amount - c.paid)}; hạn ${c.dueDate}.`).join('\n')}\nSố tiền này không phải biểu học phí công bố của trường.`,
         );
       }
+      if (/mien giam|hoc bong/.test(q))
+        parts.push(
+          'Chưa có dữ liệu học bổng hoặc quyết định miễn giảm cá nhân trong adapter hiện tại; không thể suy ra từ các khoản thu học phí.',
+        );
       if (/lich hoc|lich thi/.test(q))
         parts.push(
           `Lịch ${q.includes('lich thi') ? 'thi' : 'học'} của bạn (dữ liệu giả):\n${student.timetable
@@ -362,10 +384,7 @@ export class ChatService {
         mentionedCohort ? mentionedCohort + '-09-01' : student?.admittedAt,
       );
       if (!hits.length) {
-        const schoolQuestion =
-          /\b(hoc|diem|mon|pi|truong|nau|tuyen sinh|quy che|thu tuc|ky tuc xa|thu vien|sinh vien|hoc bong|tot nghiep)\b/.test(
-            q,
-          );
+        const schoolQuestion = isStudentServiceQuestion(effectiveQuestion);
         kind = schoolQuestion ? 'source_gap' : 'conversation';
         facts = {
           verifiedSchoolSources: [],
@@ -373,6 +392,7 @@ export class ChatService {
           synthetic: env.synthetic,
           intent: schoolQuestion ? 'missing_school_evidence' : 'clarify_counseling_intent',
           requestedCohort: mentionedCohort || student?.cohort || null,
+          requiredSource: faq?.requiredSource || null,
         };
       } else {
         facts = hits.map((h) => h.text).join('\n\n');
@@ -387,6 +407,7 @@ export class ChatService {
       !result.contextQuestion &&
       (result.evaluations.length ||
         result.citations.length ||
+        kind === 'source_gap' ||
         hypotheticalPi ||
         (personal && !social))
     )

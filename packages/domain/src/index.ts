@@ -1,4 +1,5 @@
 export * from './api-pool.js';
+export * from './student-faq.js';
 export type Role = 'student' | 'admin';
 export type AcademicStatus = 'passed' | 'failed' | 'insufficient' | 'conflict';
 export type RecordedStatus = 'passed' | 'failed' | 'pending';

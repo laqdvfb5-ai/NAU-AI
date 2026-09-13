@@ -2,6 +2,13 @@
 
 Các báo cáo máy sinh ở `reports/` được bỏ qua bởi Git. Không dùng kết quả của chế độ evidence để tuyên bố model AI đã đạt chất lượng trên dữ liệu thật.
 
+## FAQ sinh viên — 13/09/2026
+
+- Danh mục 60 câu hỏi/12 nhóm; 54 câu công khai, 6 câu cần hồ sơ. Có thêm 8 nguồn HTML chính thức đã kiểm tra: biểu mẫu hành chính/học tập/chính sách/KTX, đầu mối hỗ trợ sinh viên, thư viện, hướng nghiệp và dịch vụ số. Chỉ xác nhận phạm vi trang đã đọc; không coi tệp Word đính kèm, danh sách cá nhân hoặc thông tin về phí/hạn chưa xác minh là căn cứ.
+- 132/132 kiểm thử backend, typecheck và production build đạt. Bộ 200 fixture kỹ thuật hiện có vẫn đạt 200/200. Bộ FAQ kiểm tra định tuyến cho toàn bộ danh mục, trường hợp diễn đạt khác, nguồn theo từ viết tắt, quyền riêng tư và chuyển chủ đề; không đánh giá độ chính xác của model thật.
+- 20/20 luồng Chrome đạt trên production build local với dữ liệu biệt lập và HTTP model fixture. Hai luồng mới kiểm tra tìm kiếm không dấu, lọc chủ đề trên mobile, không tràn ngang, mã FAQ không hợp lệ và mở bản nháp không tự gửi request.
+- `npm run evaluate:faq` tạo báo cáo 60 câu: 42 câu công khai có nguồn liên quan cần rà soát đáp án, 12 câu công khai chưa tìm được nguồn phù hợp, 6 câu cần dữ liệu riêng. Đây là mức bao phủ tìm nguồn từ seed; **không phải 42 đáp án đã đúng hoặc đầy đủ**. Xem `docs/student-faq.md` và `reports/student-faq-coverage.json`.
+
 ## Danh tính model dùng chung — 10/09/2026
 
 - Phạm vi kiểm chứng mới gồm hai đường sinh câu trả lời: provider môi trường và pool. Request HTTP phải có đúng một system message bằng `MODEL_SYSTEM_PROMPT`; model thêm sau qua pool phải tiếp tục dùng `modelMessages()` thay vì dựng prompt riêng.

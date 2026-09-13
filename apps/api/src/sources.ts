@@ -1,4 +1,5 @@
 import { NAU_2025, REGULATION_URL } from '@nau/domain';
+import { studentServiceSources } from './faq-sources.js';
 export interface KnowledgeSource {
   id: string;
   title: string;
@@ -20,6 +21,7 @@ export interface KnowledgeSource {
   pendingText?: string;
 }
 export const initialSources: KnowledgeSource[] = [
+  ...studentServiceSources,
   {
     id: 'reg-2025',
     title: 'Quy chế đào tạo đại học NAU 2025',
